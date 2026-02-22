@@ -1,0 +1,34 @@
+{
+  "app": {
+    "name": "mishri",
+    "workspace": "./workspace"
+  },
+  "gateways": {
+    "telegram": {
+      "token": "YOUR_TELEGRAM_BOT_TOKEN",
+      "enabled": true
+    }
+  },
+  "providers": {
+    "openai": {
+      "api_key": "YOUR_OPENAI_API_KEY",
+      "model": "gpt-4o",
+      "enabled": true
+    },
+    "anthropic": {
+      "api_key": "YOUR_ANTHROPIC_API_KEY",
+      "model": "claude-3-5-sonnet-20240620",
+      "enabled": false
+    },
+    "openrouter": {
+      "api_key": "YOUR_OPENROUTER_API_KEY",
+      "model": "anthropic/claude-3.5-sonnet",
+      "base_url": "https://openrouter.ai/api/v1",
+      "enabled": false
+    }
+  },
+  "memory": {
+    "type": "sqlite",
+    "path": "./mishri.db"
+  }
+}

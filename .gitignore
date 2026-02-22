@@ -1,0 +1,20 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Databases
+*.db
+*.db-journal
+
+# Configuration & Secrets
+config.json
+.env
+
+# Logs
+*.log
+
+# Workspace
+workspace/
