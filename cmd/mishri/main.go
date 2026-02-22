@@ -42,8 +42,13 @@ func main() {
 		log.Fatal(err)
 	}
 
+	prompts := agent.NewPromptManager("./prompts")
+
 	cronTool := tools.NewCronTool(history)
 	registry.Register(cronTool)
+
+	shellTool := tools.NewShellTool()
+	registry.Register(shellTool)
 
 	// Initialize LLM (using default enabled provider)
 	pName, pCfg := cfg.GetDefaultProvider()
@@ -70,7 +75,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	brain := agent.NewSimpleBrain(llm, registry, history)
+	brain := agent.NewSimpleBrain(llm, registry, history, prompts)
 
 	tg, err := gateway.NewTelegramGateway(tgCfg.Token, brain)
 	if err != nil {

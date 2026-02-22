@@ -19,18 +19,21 @@ type SimpleBrain struct {
 	Model    llms.Model
 	Registry *tools.Registry
 	History  HistoryStore
+	Prompts  *PromptManager
 }
 
 type HistoryStore interface {
 	AddMessage(chatID string, role string, content string) error
 	GetHistory(chatID string, limit int) ([]llms.MessageContent, error)
+	ClearTasks(chatID string) error
 }
 
-func NewSimpleBrain(model llms.Model, registry *tools.Registry, history HistoryStore) *SimpleBrain {
+func NewSimpleBrain(model llms.Model, registry *tools.Registry, history HistoryStore, prompts *PromptManager) *SimpleBrain {
 	return &SimpleBrain{
 		Model:    model,
 		Registry: registry,
 		History:  history,
+		Prompts:  prompts,
 	}
 }
 
@@ -38,14 +41,31 @@ func (b *SimpleBrain) Think(ctx context.Context, chatID string, input string) (s
 	// Add chatID to context for tools that might need it (like Cron)
 	ctx = context.WithValue(ctx, "chatID", chatID)
 
-	// 1. Load history
+	// 1. Get System Prompt
+	systemPrompt, err := b.Prompts.GetSystemPrompt()
+	if err != nil {
+		log.Printf("Warning: Failed to load system prompt: %v", err)
+	}
+
+	// 2. Load history
 	history, err := b.History.GetHistory(chatID, 10) // Last 10 messages
 	if err != nil {
 		log.Printf("Error loading history: %v", err)
 	}
 
-	// 2. Prepare messages (History + current input)
-	messages := append(history, llms.MessageContent{
+	// 3. Prepare messages (System Prompt + History + current input)
+	var messages []llms.MessageContent
+	if systemPrompt != "" {
+		messages = append(messages, llms.MessageContent{
+			Role: llms.ChatMessageTypeSystem,
+			Parts: []llms.ContentPart{
+				llms.TextPart(systemPrompt),
+			},
+		})
+	}
+
+	messages = append(messages, history...)
+	messages = append(messages, llms.MessageContent{
 		Role: llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{
 			llms.TextPart(input),

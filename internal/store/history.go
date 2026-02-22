@@ -86,6 +86,32 @@ func (h *HistoryStore) GetPendingTasks() ([]map[string]any, error) {
 	return tasks, nil
 }
 
+func (h *HistoryStore) ListTasks(chatID string) ([]map[string]any, error) {
+	query := `SELECT id, task_description, interval_seconds, last_run, status FROM tasks WHERE chat_id = ?`
+	rows, err := h.DB.Query(query, chatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []map[string]any
+	for rows.Next() {
+		var id, interval int
+		var desc, lastRun, status string
+		if err := rows.Scan(&id, &desc, &interval, &lastRun, &status); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, map[string]any{
+			"id":               id,
+			"task_description": desc,
+			"interval_seconds": interval,
+			"last_run":         lastRun,
+			"status":           status,
+		})
+	}
+	return tasks, nil
+}
+
 func (h *HistoryStore) UpdateTaskLastRun(id int) error {
 	query := `UPDATE tasks SET last_run = datetime('now') WHERE id = ?`
 	_, err := h.DB.Exec(query, id)
@@ -98,8 +124,14 @@ func (h *HistoryStore) ClearTasks(chatID string) error {
 	return err
 }
 
+func (h *HistoryStore) DeleteTask(chatID string, taskID int) error {
+	query := `DELETE FROM tasks WHERE chat_id = ? AND id = ?`
+	_, err := h.DB.Exec(query, chatID, taskID)
+	return err
+}
+
 func (h *HistoryStore) GetHistory(chatID string, limit int) ([]llms.MessageContent, error) {
-	query := `SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?`
+	query := `SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?`
 	rows, err := h.DB.Query(query, chatID, limit)
 	if err != nil {
 		return nil, err
