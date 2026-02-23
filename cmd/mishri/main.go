@@ -50,6 +50,12 @@ func main() {
 	shellTool := tools.NewShellTool()
 	registry.Register(shellTool)
 
+	browserTool := tools.NewBrowserTool()
+	registry.Register(browserTool)
+
+	systemTool := tools.NewSystemTool()
+	registry.Register(systemTool)
+
 	// Initialize LLM (using default enabled provider)
 	pName, pCfg := cfg.GetDefaultProvider()
 	if pName == "" {
