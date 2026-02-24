@@ -17,7 +17,7 @@ func NewPromptManager(dir string) *PromptManager {
 	return &PromptManager{Directory: dir}
 }
 
-func (pm *PromptManager) GetSystemPrompt() (string, error) {
+func (pm *PromptManager) GetWorkerPrompt() (string, error) {
 	files, err := ioutil.ReadDir(pm.Directory)
 	if err != nil {
 		return "", fmt.Errorf("failed to read prompts directory: %v", err)
@@ -50,7 +50,7 @@ func (pm *PromptManager) GetSystemPrompt() (string, error) {
 	})
 
 	for _, f := range files {
-		if !f.IsDir() && strings.HasSuffix(f.Name(), ".md") {
+		if !f.IsDir() && strings.HasSuffix(f.Name(), ".md") && f.Name() != "planner.md" {
 			path := filepath.Join(pm.Directory, f.Name())
 			data, err := ioutil.ReadFile(path)
 			if err != nil {
@@ -66,4 +66,13 @@ func (pm *PromptManager) GetSystemPrompt() (string, error) {
 	}
 
 	return strings.Join(contents, "\n\n---\n\n"), nil
+}
+
+func (pm *PromptManager) GetPlannerPrompt() (string, error) {
+	path := filepath.Join(pm.Directory, "planner.md")
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read planner prompt: %v", err)
+	}
+	return string(data), nil
 }

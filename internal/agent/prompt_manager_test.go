@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestPromptManager_GetSystemPrompt(t *testing.T) {
+func TestPromptManager_GetWorkerPrompt(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "prompts_test")
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestPromptManager_GetSystemPrompt(t *testing.T) {
 	}
 
 	pm := NewPromptManager(tempDir)
-	prompt, err := pm.GetSystemPrompt()
+	prompt, err := pm.GetWorkerPrompt()
 	if err != nil {
 		t.Fatal(err)
 	}

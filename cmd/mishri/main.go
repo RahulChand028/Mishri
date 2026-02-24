@@ -81,7 +81,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	brain := agent.NewSimpleBrain(llm, registry, history, prompts)
+	worker := agent.NewWorkerBrain(llm, registry, history, prompts)
+	brain := agent.NewMasterBrain(llm, worker, history, prompts)
 
 	tg, err := gateway.NewTelegramGateway(tgCfg.Token, brain)
 	if err != nil {
