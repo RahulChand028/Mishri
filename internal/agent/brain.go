@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
+	"github.com/rahul/mishri/internal/governance"
+	"github.com/rahul/mishri/internal/observability"
+	"github.com/rahul/mishri/internal/store"
 	"github.com/rahul/mishri/internal/tools"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -16,43 +20,40 @@ type Brain interface {
 	Think(ctx context.Context, chatID string, input string) (string, error)
 }
 
-// Step represents a single sub-task in a broader plan.
-type Step struct {
-	ID          int    `json:"id"`
-	Description string `json:"description"`
-	Status      string `json:"status"` // pending, in_progress, completed, failed
-	Result      string `json:"result"`
-}
-
-// Plan represents a sequence of steps to fulfill a user request.
-type Plan struct {
-	Steps []Step `json:"steps"`
-}
-
 // WorkerBrain is a ReAct agent that handles individual sub-tasks.
 type WorkerBrain struct {
-	Model    llms.Model
-	Registry *tools.Registry
-	History  HistoryStore
-	Prompts  *PromptManager
+	Model      llms.Model
+	Registry   *tools.Registry
+	History    HistoryStore
+	Prompts    *PromptManager
+	Governance governance.PolicyEngine
+	Logger     *observability.Logger
 }
 
 type HistoryStore interface {
 	AddMessage(chatID string, role string, content string) error
 	GetHistory(chatID string, limit int) ([]llms.MessageContent, error)
 	ClearTasks(chatID string) error
+	SavePlan(chatID string, input string) (int64, error)
+	SyncPlanSteps(planID int64, steps []store.Step) error
+	RecordCost(chatID string, model string, promptTokens, completionTokens int) error
 }
 
-func NewWorkerBrain(model llms.Model, registry *tools.Registry, history HistoryStore, prompts *PromptManager) *WorkerBrain {
+func NewWorkerBrain(model llms.Model, registry *tools.Registry, history HistoryStore, prompts *PromptManager, gov governance.PolicyEngine, logger *observability.Logger) *WorkerBrain {
 	return &WorkerBrain{
-		Model:    model,
-		Registry: registry,
-		History:  history,
-		Prompts:  prompts,
+		Model:      model,
+		Registry:   registry,
+		History:    history,
+		Prompts:    prompts,
+		Governance: gov,
+		Logger:     logger,
 	}
 }
 
 func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string) (string, error) {
+	observability.SetStatus(observability.RoleSlave, input)
+	defer observability.SetStatus(observability.RoleIdle, "")
+
 	// Add chatID to context for tools that might need it (like Cron)
 	ctx = context.WithValue(ctx, "chatID", chatID)
 
@@ -98,9 +99,33 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string) (s
 	var finalResponse string
 
 	for i := 0; i < maxSteps; i++ {
-		resp, err := b.Model.GenerateContent(ctx, messages, llms.WithTools(llmTools))
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			return "Task cancelled.", ctx.Err()
+		default:
+		}
+
+		// 4.1 Reasoning Loop Timeout (Each turn has a 2-minute limit)
+		turnCtx, turnCancel := context.WithTimeout(ctx, 2*time.Minute)
+		resp, err := b.Model.GenerateContent(turnCtx, messages, llms.WithTools(llmTools))
+		turnCancel()
+
 		if err != nil {
+			if turnCtx.Err() == context.DeadlineExceeded {
+				return "", fmt.Errorf("worker reasoning turn timed out")
+			}
 			return "", err
+		}
+
+		// Track token costs
+		if resp.Choices[0].GenerationInfo != nil {
+			if usage, ok := resp.Choices[0].GenerationInfo["Usage"].(map[string]any); ok {
+				pTokens, _ := usage["PromptTokens"].(int)
+				cTokens, _ := usage["CompletionTokens"].(int)
+				_ = b.History.RecordCost(chatID, "default", pTokens, cTokens)
+				b.Logger.LogCost(chatID, "", pTokens, cTokens, "default")
+			}
 		}
 
 		choice := resp.Choices[0]
@@ -133,13 +158,14 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string) (s
 			if tool == nil {
 				result = fmt.Sprintf("Error: Tool %s not found", tc.FunctionCall.Name)
 			} else {
-				log.Printf("[Step %d] Executing tool %s with args: %s", i+1, tool.Name(), tc.FunctionCall.Arguments)
-				res, err := tool.Execute(ctx, tc.FunctionCall.Arguments)
+				res, err := b.executeWithRetry(ctx, tool, tc.FunctionCall.Arguments, chatID, i+1)
 				if err != nil {
-					res = fmt.Sprintf("Error: %v", err)
+					log.Printf("[%s][Worker Reasoning %d] Tool %s final failure: %v", chatID, i+1, tool.Name(), err)
+					result = fmt.Sprintf("Error: %v", err)
+				} else {
+					result = res
 				}
-				result = res
-				log.Printf("[Step %d] Tool %s returned: %s", i+1, tool.Name(), result)
+				log.Printf("[%s][Worker Reasoning %d] Tool %s result: %s", chatID, i+1, tool.Name(), result)
 			}
 
 			// Add tool result to messages for the next turn
@@ -163,24 +189,82 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string) (s
 	return finalResponse, nil
 }
 
+func (b *WorkerBrain) executeWithRetry(ctx context.Context, tool tools.Tool, args string, chatID string, stepIdx int) (string, error) {
+	maxRetries := 3
+	backoff := 1 * time.Second
+
+	var lastErr error
+	var result string
+
+	for i := 0; i < maxRetries; i++ {
+		// 4.1 Check Policy Engine
+		req := governance.Request{
+			Tool:      tool.Name(),
+			Arguments: args,
+			ChatID:    chatID,
+		}
+		policyRes, err := b.Governance.Evaluate(ctx, req)
+		if err != nil {
+			return "", fmt.Errorf("policy evaluation failed: %v", err)
+		}
+		if policyRes.Effect == governance.EffectDeny {
+			return fmt.Sprintf("Policy Error: %s", policyRes.Reason), nil
+		}
+
+		// 4.2 Guarded Execution (Timeout)
+		toolCtx, toolCancel := context.WithTimeout(ctx, 30*time.Second)
+		res, err := tool.Execute(toolCtx, args)
+		toolCancel()
+
+		if err == nil {
+			return res, nil
+		}
+
+		lastErr = err
+		result = res // In case tool returns a partial result or specific error message
+
+		if toolCtx.Err() == context.DeadlineExceeded {
+			result = fmt.Sprintf("Error: Tool %s timed out after 30 seconds", tool.Name())
+			// Don't retry timeouts usually, or maybe just once? Let's skip retry for timeout for now.
+			break
+		}
+
+		log.Printf("[%s][Step %d] Tool %s failed (attempt %d/%d): %v. Retrying in %v...", chatID, stepIdx, tool.Name(), i+1, maxRetries, err, backoff)
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(backoff):
+			backoff *= 2
+		}
+	}
+
+	return result, lastErr
+}
+
 // MasterBrain orchestrates multiple WorkerBrain steps.
 type MasterBrain struct {
 	Model   llms.Model
 	Worker  *WorkerBrain
 	History HistoryStore
 	Prompts *PromptManager
+	Logger  *observability.Logger
 }
 
-func NewMasterBrain(model llms.Model, worker *WorkerBrain, history HistoryStore, prompts *PromptManager) *MasterBrain {
+func NewMasterBrain(model llms.Model, worker *WorkerBrain, history HistoryStore, prompts *PromptManager, logger *observability.Logger) *MasterBrain {
 	return &MasterBrain{
 		Model:   model,
 		Worker:  worker,
 		History: history,
 		Prompts: prompts,
+		Logger:  logger,
 	}
 }
 
 func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (string, error) {
+	observability.SetStatus(observability.RoleMaster, "Planning...")
+	defer observability.SetStatus(observability.RoleIdle, "")
+
 	// 1. Get Planner Prompt
 	plannerPrompt, err := b.Prompts.GetPlannerPrompt()
 	if err != nil {
@@ -201,6 +285,10 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 	// 4. Orchestration Loop
 	maxSteps := 15
 
+	// Save initial plan to history
+	planID, _ := b.History.SavePlan(chatID, input)
+	taskID := fmt.Sprintf("plan_%d", planID)
+
 	// Create a local history of the current orchestration
 	orchContext := []llms.MessageContent{
 		{
@@ -214,11 +302,52 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 		Parts: []llms.ContentPart{llms.TextPart(input)},
 	})
 
+	lastCompletedCount := -1
+	stuckTurns := 0
+
 	for stepCount := 0; stepCount < maxSteps; stepCount++ {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			return "Task cancelled.", ctx.Err()
+		default:
+		}
+
 		// Ask Master for the current plan state
-		plan, rawResponse, isDone, err := b.plan(ctx, orchContext)
+		plan, rawResponse, isDone, err := b.plan(ctx, orchContext, chatID)
 		if err != nil {
 			return "", fmt.Errorf("planning error: %v", err)
+		}
+
+		// Loop/Deadlock Detection: If completed steps don't increase for 4 turns, it's a deadlock
+		if plan != nil {
+			completedCount := 0
+			for _, s := range plan.Steps {
+				if s.Status == "completed" {
+					completedCount++
+				}
+			}
+
+			if completedCount <= lastCompletedCount {
+				stuckTurns++
+				if stuckTurns >= 4 {
+					return "Deadlock detected: The orchestration is not making progress. Multiple turns with no new completed steps. Aborting to prevent infinite loop.", nil
+				}
+			} else {
+				stuckTurns = 0
+				lastCompletedCount = completedCount
+			}
+		}
+
+		// Update persistent plan/trace
+		if plan != nil {
+			_ = b.History.SyncPlanSteps(planID, plan.Steps)
+			b.Logger.Log(observability.Event{
+				Type:   observability.EventTypePlan,
+				ChatID: chatID,
+				TaskID: taskID,
+				Data:   plan,
+			})
 		}
 
 		// If the Master gave a text response instead of a tool call, we are done
@@ -230,7 +359,7 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 		}
 
 		// Find the next step to execute
-		var nextStep *Step
+		var nextStep *store.Step
 		for i := range plan.Steps {
 			if plan.Steps[i].Status == "pending" || plan.Steps[i].Status == "failed" {
 				nextStep = &plan.Steps[i]
@@ -240,19 +369,21 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 
 		if nextStep == nil {
 			// All steps in current plan are done, but Master didn't give final answer.
-			// Ask Master to consolidate.
+			// Forced Consolidation Guard
+			log.Printf("[%s][Master Guard] All steps completed, forcing final answer turn %d", taskID, stepCount+1)
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart("All steps in the plan are completed. Please provide your final response to the user.")},
+				Parts: []llms.ContentPart{llms.TextPart("All planned steps are completed. Provide your final consolidated answer to the user NOW.")},
 			})
 			continue
 		}
 
-		// Execute next step via Worker (Slave)
-		log.Printf("[Master] Step %d: %s", nextStep.ID, nextStep.Description)
+		log.Printf("[%s][Master Step %d] Executing: %s", taskID, nextStep.ID, nextStep.Description)
 		nextStep.Status = "in_progress"
+		observability.SetStatus(observability.RoleMaster, fmt.Sprintf("Step %d: %s", nextStep.ID, nextStep.Description))
 
-		workerResult, err := b.Worker.Think(ctx, chatID, fmt.Sprintf("TASK: %s\n\nCONTEXT: This is a sub-task for the overall request: %s", nextStep.Description, input))
+		// Minimal input to worker to prevent it from re-executing the entire request
+		workerResult, err := b.Worker.Think(ctx, chatID, fmt.Sprintf("TASK: %s", nextStep.Description))
 		if err != nil {
 			nextStep.Status = "failed"
 			nextStep.Result = fmt.Sprintf("Error: %v", err)
@@ -261,7 +392,7 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 			nextStep.Result = workerResult
 		}
 
-		log.Printf("[Master] Step %d result: %s", nextStep.ID, nextStep.Status)
+		log.Printf("[%s][Master Step %d] Result received", taskID, nextStep.ID)
 
 		// Record the execution in the orchestration context
 		orchContext = append(orchContext, llms.MessageContent{
@@ -281,7 +412,7 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 	return "I've reached the maximum number of steps for this task. Please try a simpler request.", nil
 }
 
-func (b *MasterBrain) plan(ctx context.Context, messages []llms.MessageContent) (*Plan, string, bool, error) {
+func (b *MasterBrain) plan(ctx context.Context, messages []llms.MessageContent, chatID string) (*store.Plan, string, bool, error) {
 	// Define the propose_plan tool
 	plannerTools := []llms.Tool{
 		{
@@ -318,16 +449,33 @@ func (b *MasterBrain) plan(ctx context.Context, messages []llms.MessageContent) 
 		},
 	}
 
-	resp, err := b.Model.GenerateContent(ctx, messages, llms.WithTools(plannerTools))
+	// Planning Turn Timeout (2-minute limit)
+	turnCtx, turnCancel := context.WithTimeout(ctx, 2*time.Minute)
+	resp, err := b.Model.GenerateContent(turnCtx, messages, llms.WithTools(plannerTools))
+	turnCancel()
+
 	if err != nil {
+		if turnCtx.Err() == context.DeadlineExceeded {
+			return nil, "", false, fmt.Errorf("master planning turn timed out")
+		}
 		return nil, "", false, err
+	}
+
+	// Track token costs
+	if resp.Choices[0].GenerationInfo != nil {
+		if usage, ok := resp.Choices[0].GenerationInfo["Usage"].(map[string]any); ok {
+			pTokens, _ := usage["PromptTokens"].(int)
+			cTokens, _ := usage["CompletionTokens"].(int)
+			_ = b.History.RecordCost(chatID, "default", pTokens, cTokens)
+			b.Logger.LogCost(chatID, "", pTokens, cTokens, "default")
+		}
 	}
 
 	choice := resp.Choices[0]
 
 	for _, tc := range choice.ToolCalls {
 		if tc.FunctionCall.Name == "propose_plan" {
-			var plan Plan
+			var plan store.Plan
 			if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &plan); err != nil {
 				return nil, "", false, fmt.Errorf("failed to parse propose_plan arguments: %v", err)
 			}

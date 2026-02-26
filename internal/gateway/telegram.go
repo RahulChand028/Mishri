@@ -26,8 +26,6 @@ func NewTelegramGateway(token string, brain agent.Brain) (*TelegramGateway, erro
 		return nil, err
 	}
 
-	log.Printf("Authorized on account %s", bot.Self.UserName)
-
 	return &TelegramGateway{
 		Bot:    bot,
 		Brain:  brain,

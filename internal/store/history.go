@@ -34,6 +34,34 @@ func NewHistoryStore(dbPath string) (*HistoryStore, error) {
 			last_run DATETIME,
 			status TEXT DEFAULT 'active'
 		);`,
+		`CREATE TABLE IF NOT EXISTS plans (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id TEXT,
+			input TEXT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS steps (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			plan_id INTEGER,
+			step_id_in_plan INTEGER,
+			description TEXT,
+			status TEXT,
+			result TEXT,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(plan_id) REFERENCES plans(id)
+		);`,
+		`CREATE TABLE IF NOT EXISTS costs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chat_id TEXT,
+			model TEXT,
+			prompt_tokens INTEGER,
+			completion_tokens INTEGER,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_steps_plan_id ON steps(plan_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_chat_id ON tasks(chat_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_plans_chat_id ON plans(chat_id);`,
 	}
 	for _, q := range queries {
 		_, err = db.Exec(q)
@@ -172,4 +200,35 @@ func (h *HistoryStore) GetHistory(chatID string, limit int) ([]llms.MessageConte
 	}
 
 	return history, nil
+}
+
+func (h *HistoryStore) SavePlan(chatID string, input string) (int64, error) {
+	res, err := h.DB.Exec(`INSERT INTO plans (chat_id, input) VALUES (?, ?)`, chatID, input)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (h *HistoryStore) SyncPlanSteps(planID int64, steps []Step) error {
+	// Simple strategy: delete and recreate steps for a plan to sync state
+	_, err := h.DB.Exec(`DELETE FROM steps WHERE plan_id = ?`, planID)
+	if err != nil {
+		return err
+	}
+
+	for _, step := range steps {
+		_, err = h.DB.Exec(`INSERT INTO steps (plan_id, step_id_in_plan, description, status, result) VALUES (?, ?, ?, ?, ?)`,
+			planID, step.ID, step.Description, step.Status, step.Result)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *HistoryStore) RecordCost(chatID string, model string, promptTokens, completionTokens int) error {
+	_, err := h.DB.Exec(`INSERT INTO costs (chat_id, model, prompt_tokens, completion_tokens) VALUES (?, ?, ?, ?)`,
+		chatID, model, promptTokens, completionTokens)
+	return err
 }

@@ -28,10 +28,11 @@ func (pm *PromptManager) GetWorkerPrompt() (string, error) {
 	// Sort files to ensure deterministic prompt order
 	// We might want a specific order: identity, soul, capabilities, user
 	order := map[string]int{
-		"identity.md":     1,
-		"soul.md":         2,
-		"capabilities.md": 3,
-		"user.md":         4,
+		"identity.md":         1,
+		"soul.md":             2,
+		"capabilities.md":     3,
+		"worker_directive.md": 4,
+		"user.md":             5,
 	}
 
 	sort.Slice(files, func(i, j int) bool {

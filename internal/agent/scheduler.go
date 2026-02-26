@@ -42,8 +42,6 @@ func (s *Scheduler) Start(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	log.Println("Task scheduler started...")
-
 	for {
 		select {
 		case <-ctx.Done():
