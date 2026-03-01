@@ -37,6 +37,7 @@ type HistoryStore interface {
 	ClearTasks(chatID string) error
 	SavePlan(chatID string, input string) (int64, error)
 	SyncPlanSteps(planID int64, steps []store.Step) error
+	SyncPlanAgents(planID int64, agents []store.Agent) error
 	RecordCost(chatID string, model string, promptTokens, completionTokens int) error
 }
 
@@ -151,7 +152,7 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string, st
 	}
 
 	// 4. Reasoning Loop (ReAct)
-	maxSteps := 10
+	maxSteps := 20
 	var finalResponse string
 
 	for i := 0; i < maxSteps; i++ {
@@ -270,10 +271,22 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string, st
 	}
 
 	if finalResponse == "" {
-		finalResponse = "Thinking too much... I've reached the maximum reasoning steps. Please try a simpler request."
+		finalResponse = "STATUS: partial\nDONE: Reached maximum reasoning steps before completing the task.\nDATA: \nFAILED: Ran out of reasoning steps\nNEXT: Retry with a more focused prompt or simpler sub-task"
 	}
 
 	return finalResponse, nil
+}
+
+// ThinkWithSystemPrompt is like Think but accepts a fully pre-built system prompt
+// instead of loading from the prompt file. Used by CodeAgent and ReflectionAgent
+// when the Manager has crafted a custom prompt for the agent.
+func (b *WorkerBrain) ThinkWithSystemPrompt(ctx context.Context, chatID string, input string, agentID int, allowedTools []string, systemPrompt string) (string, error) {
+	// Swap out the prompt loader with the pre-built prompt, then delegate.
+	original := b.Prompts
+	b.Prompts = &PromptManager{Directory: b.Prompts.Directory, overridePrompt: systemPrompt}
+	result, err := b.Think(ctx, chatID, input, agentID, allowedTools)
+	b.Prompts = original
+	return result, err
 }
 
 func (b *WorkerBrain) executeWithRetry(ctx context.Context, tool tools.Tool, args string, chatID string, stepIdx int) (string, error) {
@@ -341,22 +354,24 @@ func trimOrchContext(msgs []llms.MessageContent, maxRecent int) []llms.MessageCo
 	return trimmed
 }
 
-// MasterBrain orchestrates multiple WorkerBrain steps.
+// MasterBrain orchestrates autonomous agents to fulfill a user request.
 type MasterBrain struct {
-	Model   llms.Model
-	Worker  *WorkerBrain
-	History HistoryStore
-	Prompts *PromptManager
-	Logger  *observability.Logger
+	Model      llms.Model
+	Worker     *WorkerBrain
+	History    HistoryStore
+	Prompts    *PromptManager
+	Logger     *observability.Logger
+	Dispatcher *AgentDispatcher
 }
 
-func NewMasterBrain(model llms.Model, worker *WorkerBrain, history HistoryStore, prompts *PromptManager, logger *observability.Logger) *MasterBrain {
+func NewMasterBrain(model llms.Model, worker *WorkerBrain, history HistoryStore, prompts *PromptManager, logger *observability.Logger, dispatcher *AgentDispatcher) *MasterBrain {
 	return &MasterBrain{
-		Model:   model,
-		Worker:  worker,
-		History: history,
-		Prompts: prompts,
-		Logger:  logger,
+		Model:      model,
+		Worker:     worker,
+		History:    history,
+		Prompts:    prompts,
+		Logger:     logger,
+		Dispatcher: dispatcher,
 	}
 }
 
@@ -375,8 +390,6 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 	for _, t := range b.Worker.Registry.Tools {
 		toolDescriptions = append(toolDescriptions, fmt.Sprintf("- %s: %s", t.Name(), t.Description()))
 	}
-	// Also add the built-in read_scratchpad tool
-	toolDescriptions = append(toolDescriptions, "- read_scratchpad: Read the current task scratchpad to see details from previous steps.")
 
 	toolsList := strings.Join(toolDescriptions, "\n")
 
@@ -392,18 +405,11 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 	_ = os.WriteFile(scratchPath, []byte("# Task Scratchpad\nInitial User Request: "+input+"\n"), 0644)
 	defer os.Remove(scratchPath)
 
-	// 4. Orchestration Loop
-	maxSteps := 15
-
-	// Save initial plan to history
+	// Save plan to history for tracing.
 	planID, _ := b.History.SavePlan(chatID, input)
 	taskID := fmt.Sprintf("plan_%d", planID)
 
-	// stepToolLock locks the tool list for each step ID once it has been set.
-	// This prevents the Master from expanding tools for a step it already assigned.
-	stepToolLock := make(map[int][]string)
-
-	// Create a local history of the current orchestration
+	// Build the orchestration context: system prompt + chat history + user request.
 	orchContext := []llms.MessageContent{
 		{
 			Role:  llms.ChatMessageTypeSystem,
@@ -416,160 +422,122 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 		Parts: []llms.ContentPart{llms.TextPart(input)},
 	})
 
-	lastCompletedCount := -1
-	stuckTurns := 0
-	consolidationTurns := 0 // Bug 3 fix: tracks turns where all steps done but Master hasn't given final answer
+	// ---- Agent Dispatch Loop ----
+	var priorReports []string
+	maxIterations := 20 // Safety guard — prevents infinite loop if manager stalls.
 
-	for stepCount := 0; stepCount < maxSteps; stepCount++ {
-		// Check for cancellation
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		// Check for cancellation before each iteration.
 		select {
 		case <-ctx.Done():
 			return "Task cancelled.", ctx.Err()
 		default:
 		}
 
-		// Ask Master for the current plan state
-		// Bug 4 fix: Trim orchestration context to prevent unbounded growth.
-		// Keep system message (index 0) + last 14 messages.
+		// Ask manager for current/updated agent plan.
 		orchContext = trimOrchContext(orchContext, 14)
-
-		plan, rawResponse, isDone, err := b.plan(ctx, &orchContext, chatID, 0)
-		if err != nil {
-			return "", fmt.Errorf("planning error: %v", err)
+		agentPlan, rawResponse, isDone, planErr := b.plan(ctx, &orchContext, chatID, 0)
+		if planErr != nil {
+			return "", fmt.Errorf("planning error: %v", planErr)
 		}
 
-		// Loop/Deadlock Detection: If completed steps don't increase for 4 turns, it's a deadlock
-		if plan != nil {
-			completedCount := 0
-			for _, s := range plan.Steps {
-				if s.Status == "completed" {
-					completedCount++
-				}
-			}
-
-			if completedCount <= lastCompletedCount {
-				stuckTurns++
-				if stuckTurns >= 4 {
-					return "Deadlock detected: The orchestration is not making progress. Multiple turns with no new completed steps. Aborting to prevent infinite loop.", nil
-				}
-			} else {
-				stuckTurns = 0
-				lastCompletedCount = completedCount
-			}
-		}
-
-		// Update persistent plan/trace
-		if plan != nil {
-			_ = b.History.SyncPlanSteps(planID, plan.Steps)
-			b.Logger.Log(observability.Event{
-				Type:   observability.EventTypePlan,
-				ChatID: chatID,
-				TaskID: taskID,
-				Data:   plan,
-			})
-		}
-
-		// If the Master gave a text response instead of a tool call, we are done
+		// Manager gave a final text answer — we are done.
 		if isDone {
-			// Master saves final exchange to history
 			b.History.AddMessage(chatID, "human", input)
 			b.History.AddMessage(chatID, "ai", rawResponse)
 			return rawResponse, nil
 		}
 
-		// Find the next step to execute
-		var nextStep *store.Step
-		for i := range plan.Steps {
-			s := &plan.Steps[i]
-			if s.Status == "failed" {
-				// Step failed — release the tool lock so the Master can assign
-				// different tools for a retry re-plan.
-				delete(stepToolLock, s.ID)
-			} else if s.Status == "pending" {
-				// Enforce original tool list if already locked (prevents expanding
-				// tools on a re-plan of a still-pending step).
-				if locked, ok := stepToolLock[s.ID]; ok {
-					s.Tools = locked
-				} else if len(s.Tools) > 0 {
-					// First time we see this pending step with tools — lock it.
-					stepToolLock[s.ID] = s.Tools
-				}
-			}
+		if agentPlan == nil {
+			return "Planner failed to produce a plan.", nil
+		}
 
-			if nextStep == nil && (s.Status == "pending" || s.Status == "failed") {
-				nextStep = s
+		// Persist current agent plan state.
+		_ = b.History.SyncPlanAgents(planID, agentPlan.Agents)
+		b.Logger.Log(observability.Event{
+			Type:   observability.EventTypePlan,
+			ChatID: chatID,
+			TaskID: taskID,
+			Data:   agentPlan,
+		})
+
+		// Find the first pending agent to run.
+		var nextAgent *store.Agent
+		for i := range agentPlan.Agents {
+			if agentPlan.Agents[i].Status == "pending" || agentPlan.Agents[i].Status == "" {
+				nextAgent = &agentPlan.Agents[i]
+				break
 			}
 		}
 
-		if nextStep == nil {
-			// All steps in current plan are done, but Master didn't give final answer.
-			// Bug 3 fix: Abort if Master is repeatedly stuck in consolidation.
-			consolidationTurns++
-			if consolidationTurns >= 3 {
-				return "All steps completed but the planner failed to produce a final answer. Please try again.", nil
-			}
-			log.Printf("[%s][Master Guard] All steps completed, forcing final answer turn %d (consolidation %d/3)", taskID, stepCount+1, consolidationTurns)
+		if nextAgent == nil {
+			// All agents done — push manager to give the final answer.
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart("All planned steps are completed. You MUST now provide your final consolidated answer to the user as plain text, NOT as a tool call.")},
+				Parts: []llms.ContentPart{llms.TextPart("All agents have completed. Synthesize their reports and give the user a final answer as plain text.")},
 			})
 			continue
 		}
 
-		log.Printf("[%s][Master Step %d] Executing: %s (Tools: %v)", taskID, nextStep.ID, nextStep.Description, nextStep.Tools)
-		consolidationTurns = 0 // Reset: Master is actively executing a step, not stuck in consolidation.
-		// Bug 2 fix: Do not set "in_progress" — it's a phantom state not in the plan schema.
-		observability.SetStatus(observability.RoleMaster, fmt.Sprintf("Step %d: %s", nextStep.ID, nextStep.Description))
+		log.Printf("[%s][Agent %d/%d] Type=%s Goal=%s", taskID, nextAgent.ID, len(agentPlan.Agents), nextAgent.Type, nextAgent.Goal)
+		observability.SetStatus(observability.RoleMaster, fmt.Sprintf("Agent %d (%s): %s", nextAgent.ID, nextAgent.Type, nextAgent.Goal))
 
-		// Management of the Scratchpad
-		scratchPath := fmt.Sprintf("logs/scratchpad_%s.md", chatID)
+		// Inject prior reports into system prompt if not already present.
+		systemPrompt := nextAgent.SystemPrompt
+		if len(priorReports) > 0 {
+			priorContext := "\n\n## Prior Agent Reports:\n" + strings.Join(priorReports, "\n---\n")
+			if !strings.Contains(systemPrompt, "Prior Agent Reports") {
+				systemPrompt += priorContext
+			}
+		}
 
-		workerResult, err := b.Worker.Think(ctx, chatID, fmt.Sprintf("TASK: %s", nextStep.Description), nextStep.ID, nextStep.Tools)
-		if err != nil {
-			nextStep.Status = "failed"
-			nextStep.Result = fmt.Sprintf("Error: %v", err)
+		// Dispatch to the appropriate agent type.
+		var report string
+		if b.Dispatcher != nil {
+			report, err = b.Dispatcher.Dispatch(ctx, string(nextAgent.Type), chatID, nextAgent.ID, systemPrompt, nextAgent.Tools, b.Logger)
 		} else {
-			nextStep.Status = "completed"
-			nextStep.Result = workerResult
+			report, err = b.Worker.ThinkWithSystemPrompt(ctx, chatID, "Execute your task.", nextAgent.ID, nextAgent.Tools, systemPrompt)
 		}
 
-		// Bug 1 fix: Write to scratchpad for BOTH success and failure,
-		// so failed step context is available for retry re-plans.
-		f, _ := os.OpenFile(scratchPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if f != nil {
-			f.WriteString(fmt.Sprintf("\n### Step %d Result (%s):\n%s\n", nextStep.ID, nextStep.Status, nextStep.Result))
-			f.Close()
+		if err != nil {
+			nextAgent.Status = "failed"
+			nextAgent.Report = fmt.Sprintf("Error: %v", err)
+		} else {
+			nextAgent.Status = "completed"
+			nextAgent.Report = report
+			priorReports = append(priorReports, fmt.Sprintf("Agent %d (%s):\n%s", nextAgent.ID, nextAgent.Type, report))
+
+			// Persist the agent's report to the scratchpad so subsequent agents
+			// can read it via the read_scratchpad tool.
+			scratchEntry := fmt.Sprintf("\n\n## Agent %d (%s) Report\n%s\n", nextAgent.ID, nextAgent.Type, report)
+			if f, ferr := os.OpenFile(scratchPath, os.O_APPEND|os.O_WRONLY, 0644); ferr == nil {
+				_, _ = f.WriteString(scratchEntry)
+				f.Close()
+			}
 		}
 
-		log.Printf("[%s][Master Step %d] Result received", taskID, nextStep.ID)
+		_ = b.History.SyncPlanAgents(planID, agentPlan.Agents)
+		log.Printf("[%s][Agent %d] Status=%s", taskID, nextAgent.ID, nextAgent.Status)
 
-		// Record the execution in the orchestration context
+		// Feed result back to manager for re-plan or final answer.
+		brief := nextAgent.Report
+		if len(brief) > 800 {
+			brief = brief[:800] + "... [truncated]"
+		}
 		orchContext = append(orchContext, llms.MessageContent{
-			Role: llms.ChatMessageTypeAI,
-			Parts: []llms.ContentPart{
-				llms.TextPart(fmt.Sprintf("Plan updated. Executed step %d.", nextStep.ID)),
-			},
+			Role:  llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Agent %d completed.", nextAgent.ID))},
 		})
-
-		// Truncate result for the orchestration context to avoid bloating.
-		// Detailed data is in the scratchpad at logs/scratchpad_<chatID>.md
-		briefResult := nextStep.Result
-		if len(briefResult) > 500 {
-			briefResult = briefResult[:500] + "... [truncated, full detail in scratchpad]"
-		}
-
 		orchContext = append(orchContext, llms.MessageContent{
-			Role: llms.ChatMessageTypeHuman,
-			Parts: []llms.ContentPart{
-				llms.TextPart(fmt.Sprintf("Step %d result: %s\nOutput: %s\n\nFull details are in the scratchpad. Please update the plan or provide the final answer.", nextStep.ID, nextStep.Status, briefResult)),
-			},
+			Role:  llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Agent %d (%s) report [%s]:\n%s\n\nUpdate the plan or give the final answer.", nextAgent.ID, nextAgent.Type, nextAgent.Status, brief))},
 		})
 	}
 
-	return "I've reached the maximum number of steps for this task. Please try a simpler request.", nil
+	return "I've reached the maximum number of planning iterations. The task may be too complex — please try a simpler request.", nil
 }
 
-func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent, chatID string, depth int) (*store.Plan, string, bool, error) {
+func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent, chatID string, depth int) (*store.AgentPlan, string, bool, error) {
 	if depth > 3 {
 		return nil, "", false, fmt.Errorf("master planning exceeded maximum tool recursion depth (3)")
 	}
@@ -578,11 +546,11 @@ func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent,
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        "propose_plan",
-				Description: "Submit or update a structured plan consisting of multiple steps.",
+				Description: "Submit or update a plan of autonomous agents to execute the user's task. Each agent runs to completion and reports back.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"steps": map[string]any{
+						"agents": map[string]any{
 							"type": "array",
 							"items": map[string]any{
 								"type": "object",
@@ -590,34 +558,30 @@ func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent,
 									"id": map[string]any{
 										"type": "integer",
 									},
-									"description": map[string]any{
+									"type": map[string]any{
+										"type": "string",
+										"enum": []string{"react", "code", "reflection"},
+									},
+									"goal": map[string]any{
 										"type": "string",
 									},
-									"status": map[string]any{
+									"system_prompt": map[string]any{
 										"type": "string",
-										"enum": []string{"pending", "completed", "failed"},
 									},
 									"tools": map[string]any{
 										"type":  "array",
 										"items": map[string]any{"type": "string"},
 									},
+									"status": map[string]any{
+										"type": "string",
+										"enum": []string{"pending", "completed", "failed"},
+									},
 								},
-								"required": []string{"id", "description", "status", "tools"},
+								"required": []string{"id", "type", "goal", "system_prompt", "tools", "status"},
 							},
 						},
 					},
-					"required": []string{"steps"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        "read_scratchpad",
-				Description: "Read the current task scratchpad to see details from previous steps.",
-				Parameters: map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
+					"required": []string{"agents"},
 				},
 			},
 		},
@@ -691,13 +655,11 @@ func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent,
 	// Pass 2: handle propose_plan (takes priority — return immediately if found).
 	for _, tc := range choice.ToolCalls {
 		if tc.FunctionCall.Name == "propose_plan" {
-			var plan store.Plan
-			if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &plan); err != nil {
+			var agentPlan store.AgentPlan
+			if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &agentPlan); err != nil {
 				return nil, "", false, fmt.Errorf("failed to parse propose_plan arguments: %v", err)
 			}
-			// Add a synthetic tool response to keep the message history consistent.
-			// Without this, any preceding read_scratchpad responses would leave the
-			// propose_plan call unanswered, potentially breaking some LLM providers.
+			// Add a synthetic tool response to keep message history consistent.
 			*messages = append(*messages, llms.MessageContent{
 				Role: llms.ChatMessageTypeTool,
 				Parts: []llms.ContentPart{
@@ -708,7 +670,7 @@ func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent,
 					},
 				},
 			})
-			return &plan, "", false, nil
+			return &agentPlan, "", false, nil
 		}
 	}
 

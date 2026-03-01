@@ -103,7 +103,14 @@ func main() {
 	}
 
 	worker := agent.NewWorkerBrain(llm, registry, history, prompts, gov, logger)
-	brain := agent.NewMasterBrain(llm, worker, history, prompts, logger)
+
+	// Build the AgentDispatcher with all supported agent types.
+	dispatcher := agent.NewSimpleDispatcher()
+	dispatcher.Register("react", agent.NewReactAgent(worker, logger))
+	dispatcher.Register("code", agent.NewCodeAgent(llm, worker, logger))
+	dispatcher.Register("reflection", agent.NewReflectionAgent(llm, worker, logger))
+
+	brain := agent.NewMasterBrain(llm, worker, history, prompts, logger, dispatcher)
 
 	tg, err := gateway.NewTelegramGateway(tgCfg.Token, brain)
 	if err != nil {

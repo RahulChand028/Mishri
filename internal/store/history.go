@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 
 	_ "github.com/glebarez/go-sqlite"
 	"github.com/tmc/langchaingo/llms"
@@ -47,6 +48,19 @@ func NewHistoryStore(dbPath string) (*HistoryStore, error) {
 			description TEXT,
 			status TEXT,
 			result TEXT,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(plan_id) REFERENCES plans(id)
+		);`,
+		`CREATE TABLE IF NOT EXISTS agents (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			plan_id INTEGER,
+			agent_id_in_plan INTEGER,
+			type TEXT,
+			goal TEXT,
+			system_prompt TEXT,
+			tools TEXT,
+			status TEXT,
+			report TEXT,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY(plan_id) REFERENCES plans(id)
 		);`,
@@ -231,4 +245,25 @@ func (h *HistoryStore) RecordCost(chatID string, model string, promptTokens, com
 	_, err := h.DB.Exec(`INSERT INTO costs (chat_id, model, prompt_tokens, completion_tokens) VALUES (?, ?, ?, ?)`,
 		chatID, model, promptTokens, completionTokens)
 	return err
+}
+
+// SyncPlanAgents persists the current state of all agents in an AgentPlan.
+// It replaces all agents for the given plan with the current state (delete+insert).
+func (h *HistoryStore) SyncPlanAgents(planID int64, agents []Agent) error {
+	_, err := h.DB.Exec(`DELETE FROM agents WHERE plan_id = ?`, planID)
+	if err != nil {
+		return err
+	}
+
+	for _, a := range agents {
+		toolsJSON := strings.Join(a.Tools, ",")
+		_, err = h.DB.Exec(
+			`INSERT INTO agents (plan_id, agent_id_in_plan, type, goal, system_prompt, tools, status, report) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			planID, a.ID, string(a.Type), a.Goal, a.SystemPrompt, toolsJSON, a.Status, a.Report,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
