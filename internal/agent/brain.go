@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -50,18 +51,21 @@ func NewWorkerBrain(model llms.Model, registry *tools.Registry, history HistoryS
 	}
 }
 
-func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string) (string, error) {
+func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string, stepID int, allowedTools []string) (string, error) {
 	observability.SetStatus(observability.RoleSlave, input)
 	defer observability.SetStatus(observability.RoleIdle, "")
 
 	// Add chatID to context for tools that might need it (like Cron)
 	ctx = context.WithValue(ctx, "chatID", chatID)
 
-	// 1. Get Worker Prompt
-	systemPrompt, err := b.Prompts.GetWorkerPrompt()
+	systemPrompt, err := b.Prompts.GetLeanWorkerPrompt()
 	if err != nil {
-		log.Printf("Warning: Failed to load worker prompt: %v", err)
+		log.Printf("Warning: Failed to load lean worker prompt: %v", err)
 	}
+
+	// Dynamic Template Replacement
+	systemPrompt = strings.ReplaceAll(systemPrompt, "{{STEP_ID}}", fmt.Sprintf("%d", stepID))
+	systemPrompt = strings.ReplaceAll(systemPrompt, "{{CHAT_ID}}", chatID)
 
 	// 2. Prepare messages (System Prompt + current input)
 	var messages []llms.MessageContent
@@ -81,15 +85,67 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string) (s
 		},
 	})
 
-	// 3. Prepare tools for the LLM
+	// 3. Prepare tools for the LLM (Filter by whitelist)
+	whitelist := make(map[string]bool)
+	for _, t := range allowedTools {
+		whitelist[t] = true
+	}
+
 	var llmTools []llms.Tool
 	for _, t := range b.Registry.Tools {
+		if allowedTools != nil && !whitelist[t.Name()] {
+			continue // Skip if not whitelisted
+		}
 		llmTools = append(llmTools, llms.Tool{
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        t.Name(),
 				Description: t.Description(),
 				Parameters:  t.Parameters(),
+			},
+		})
+	}
+
+	// Bug 5 fix: Always allow reading and writing the scratchpad, but only add each once.
+	hasScratchpad := false
+	hasWriteScratchpad := false
+	for _, t := range llmTools {
+		if t.Function != nil && t.Function.Name == "read_scratchpad" {
+			hasScratchpad = true
+		}
+		if t.Function != nil && t.Function.Name == "write_scratchpad" {
+			hasWriteScratchpad = true
+		}
+	}
+	if !hasScratchpad {
+		llmTools = append(llmTools, llms.Tool{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "read_scratchpad",
+				Description: "Read the current task scratchpad to see details from previous steps.",
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
+			},
+		})
+	}
+	if !hasWriteScratchpad {
+		llmTools = append(llmTools, llms.Tool{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "write_scratchpad",
+				Description: "Append detailed data to the task scratchpad for future steps to use. Use this to save the FULL, UNTRUNCATED output from your tools (e.g. all search results, all scraped content, all names and values). Do not summarize — write everything.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"content": map[string]any{
+							"type":        "string",
+							"description": "The full data to append to the scratchpad. Include all raw details, names, values, and sources.",
+						},
+					},
+					"required": []string{"content"},
+				},
 			},
 		})
 	}
@@ -117,6 +173,9 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string) (s
 			}
 			return "", err
 		}
+
+		// Log LLM interaction
+		b.Logger.LogLLM(chatID, "", messages, resp.Choices[0].Content, resp.Choices[0].ToolCalls)
 
 		// Track token costs
 		if resp.Choices[0].GenerationInfo != nil {
@@ -152,20 +211,48 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID string, input string) (s
 
 		// Handle Tool Calls (Observe results)
 		for _, tc := range choice.ToolCalls {
-			tool := b.Registry.Get(tc.FunctionCall.Name)
 			var result string
-
-			if tool == nil {
-				result = fmt.Sprintf("Error: Tool %s not found", tc.FunctionCall.Name)
-			} else {
-				res, err := b.executeWithRetry(ctx, tool, tc.FunctionCall.Arguments, chatID, i+1)
+			if tc.FunctionCall.Name == "read_scratchpad" {
+				scratchPath := fmt.Sprintf("logs/scratchpad_%s.md", chatID)
+				data, err := os.ReadFile(scratchPath)
 				if err != nil {
-					log.Printf("[%s][Worker Reasoning %d] Tool %s final failure: %v", chatID, i+1, tool.Name(), err)
-					result = fmt.Sprintf("Error: %v", err)
+					result = fmt.Sprintf("Error reading scratchpad: %v", err)
 				} else {
-					result = res
+					result = string(data)
 				}
-				log.Printf("[%s][Worker Reasoning %d] Tool %s result: %s", chatID, i+1, tool.Name(), result)
+				log.Printf("[%s][Worker Reasoning %d] read_scratchpad result: %d bytes", chatID, i+1, len(result))
+			} else if tc.FunctionCall.Name == "write_scratchpad" {
+				scratchPath := fmt.Sprintf("logs/scratchpad_%s.md", chatID)
+				var args struct {
+					Content string `json:"content"`
+				}
+				if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &args); err != nil {
+					result = fmt.Sprintf("Error parsing write_scratchpad args: %v", err)
+				} else {
+					f, ferr := os.OpenFile(scratchPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+					if ferr != nil {
+						result = fmt.Sprintf("Error opening scratchpad for write: %v", ferr)
+					} else {
+						f.WriteString("\n#### Worker Data:\n" + args.Content + "\n")
+						f.Close()
+						result = fmt.Sprintf("Successfully wrote %d bytes to scratchpad.", len(args.Content))
+					}
+				}
+				log.Printf("[%s][Worker Reasoning %d] write_scratchpad: %d bytes", chatID, i+1, len(args.Content))
+			} else {
+				tool := b.Registry.Get(tc.FunctionCall.Name)
+				if tool == nil {
+					result = fmt.Sprintf("Error: Tool %s not found", tc.FunctionCall.Name)
+				} else {
+					res, err := b.executeWithRetry(ctx, tool, tc.FunctionCall.Arguments, chatID, i+1)
+					if err != nil {
+						log.Printf("[%s][Worker Reasoning %d] Tool %s final failure: %v", chatID, i+1, tool.Name(), err)
+						result = fmt.Sprintf("Error: %v", err)
+					} else {
+						result = res
+					}
+					log.Printf("[%s][Worker Reasoning %d] Tool %s result: %s", chatID, i+1, tool.Name(), result)
+				}
 			}
 
 			// Add tool result to messages for the next turn
@@ -242,6 +329,18 @@ func (b *WorkerBrain) executeWithRetry(ctx context.Context, tool tools.Tool, arg
 	return result, lastErr
 }
 
+// trimOrchContext keeps the system prompt (index 0) plus the most recent maxRecent messages,
+// preventing the orchestration context window from growing unboundedly.
+func trimOrchContext(msgs []llms.MessageContent, maxRecent int) []llms.MessageContent {
+	if len(msgs) <= 1+maxRecent {
+		return msgs
+	}
+	trimmed := make([]llms.MessageContent, 1+maxRecent)
+	trimmed[0] = msgs[0]
+	copy(trimmed[1:], msgs[len(msgs)-maxRecent:])
+	return trimmed
+}
+
 // MasterBrain orchestrates multiple WorkerBrain steps.
 type MasterBrain struct {
 	Model   llms.Model
@@ -276,11 +375,22 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 	for _, t := range b.Worker.Registry.Tools {
 		toolDescriptions = append(toolDescriptions, fmt.Sprintf("- %s: %s", t.Name(), t.Description()))
 	}
+	// Also add the built-in read_scratchpad tool
+	toolDescriptions = append(toolDescriptions, "- read_scratchpad: Read the current task scratchpad to see details from previous steps.")
+
 	toolsList := strings.Join(toolDescriptions, "\n")
-	fullPlannerPrompt := fmt.Sprintf("%s\n\n## Available Tools (Slave Capabilities):\n%s", plannerPrompt, toolsList)
+
+	// Dynamic Template Replacement for Master
+	fullPlannerPrompt := strings.ReplaceAll(plannerPrompt, "{{CHAT_ID}}", chatID)
+	fullPlannerPrompt = fmt.Sprintf("%s\n\n## Available Tools (Slave Capabilities):\n%s", fullPlannerPrompt, toolsList)
 
 	// 3. Load history (for context)
-	history, _ := b.History.GetHistory(chatID, 5)
+	history, _ := b.History.GetHistory(chatID, 10) // Bug 7 fix: increased from 5 to 10
+
+	// Initialize Scratchpad
+	scratchPath := fmt.Sprintf("logs/scratchpad_%s.md", chatID)
+	_ = os.WriteFile(scratchPath, []byte("# Task Scratchpad\nInitial User Request: "+input+"\n"), 0644)
+	defer os.Remove(scratchPath)
 
 	// 4. Orchestration Loop
 	maxSteps := 15
@@ -288,6 +398,10 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 	// Save initial plan to history
 	planID, _ := b.History.SavePlan(chatID, input)
 	taskID := fmt.Sprintf("plan_%d", planID)
+
+	// stepToolLock locks the tool list for each step ID once it has been set.
+	// This prevents the Master from expanding tools for a step it already assigned.
+	stepToolLock := make(map[int][]string)
 
 	// Create a local history of the current orchestration
 	orchContext := []llms.MessageContent{
@@ -304,6 +418,7 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 
 	lastCompletedCount := -1
 	stuckTurns := 0
+	consolidationTurns := 0 // Bug 3 fix: tracks turns where all steps done but Master hasn't given final answer
 
 	for stepCount := 0; stepCount < maxSteps; stepCount++ {
 		// Check for cancellation
@@ -314,7 +429,11 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 		}
 
 		// Ask Master for the current plan state
-		plan, rawResponse, isDone, err := b.plan(ctx, orchContext, chatID)
+		// Bug 4 fix: Trim orchestration context to prevent unbounded growth.
+		// Keep system message (index 0) + last 14 messages.
+		orchContext = trimOrchContext(orchContext, 14)
+
+		plan, rawResponse, isDone, err := b.plan(ctx, &orchContext, chatID, 0)
 		if err != nil {
 			return "", fmt.Errorf("planning error: %v", err)
 		}
@@ -361,35 +480,65 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 		// Find the next step to execute
 		var nextStep *store.Step
 		for i := range plan.Steps {
-			if plan.Steps[i].Status == "pending" || plan.Steps[i].Status == "failed" {
-				nextStep = &plan.Steps[i]
-				break
+			s := &plan.Steps[i]
+			if s.Status == "failed" {
+				// Step failed — release the tool lock so the Master can assign
+				// different tools for a retry re-plan.
+				delete(stepToolLock, s.ID)
+			} else if s.Status == "pending" {
+				// Enforce original tool list if already locked (prevents expanding
+				// tools on a re-plan of a still-pending step).
+				if locked, ok := stepToolLock[s.ID]; ok {
+					s.Tools = locked
+				} else if len(s.Tools) > 0 {
+					// First time we see this pending step with tools — lock it.
+					stepToolLock[s.ID] = s.Tools
+				}
+			}
+
+			if nextStep == nil && (s.Status == "pending" || s.Status == "failed") {
+				nextStep = s
 			}
 		}
 
 		if nextStep == nil {
 			// All steps in current plan are done, but Master didn't give final answer.
-			// Forced Consolidation Guard
-			log.Printf("[%s][Master Guard] All steps completed, forcing final answer turn %d", taskID, stepCount+1)
+			// Bug 3 fix: Abort if Master is repeatedly stuck in consolidation.
+			consolidationTurns++
+			if consolidationTurns >= 3 {
+				return "All steps completed but the planner failed to produce a final answer. Please try again.", nil
+			}
+			log.Printf("[%s][Master Guard] All steps completed, forcing final answer turn %d (consolidation %d/3)", taskID, stepCount+1, consolidationTurns)
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart("All planned steps are completed. Provide your final consolidated answer to the user NOW.")},
+				Parts: []llms.ContentPart{llms.TextPart("All planned steps are completed. You MUST now provide your final consolidated answer to the user as plain text, NOT as a tool call.")},
 			})
 			continue
 		}
 
-		log.Printf("[%s][Master Step %d] Executing: %s", taskID, nextStep.ID, nextStep.Description)
-		nextStep.Status = "in_progress"
+		log.Printf("[%s][Master Step %d] Executing: %s (Tools: %v)", taskID, nextStep.ID, nextStep.Description, nextStep.Tools)
+		consolidationTurns = 0 // Reset: Master is actively executing a step, not stuck in consolidation.
+		// Bug 2 fix: Do not set "in_progress" — it's a phantom state not in the plan schema.
 		observability.SetStatus(observability.RoleMaster, fmt.Sprintf("Step %d: %s", nextStep.ID, nextStep.Description))
 
-		// Minimal input to worker to prevent it from re-executing the entire request
-		workerResult, err := b.Worker.Think(ctx, chatID, fmt.Sprintf("TASK: %s", nextStep.Description))
+		// Management of the Scratchpad
+		scratchPath := fmt.Sprintf("logs/scratchpad_%s.md", chatID)
+
+		workerResult, err := b.Worker.Think(ctx, chatID, fmt.Sprintf("TASK: %s", nextStep.Description), nextStep.ID, nextStep.Tools)
 		if err != nil {
 			nextStep.Status = "failed"
 			nextStep.Result = fmt.Sprintf("Error: %v", err)
 		} else {
 			nextStep.Status = "completed"
 			nextStep.Result = workerResult
+		}
+
+		// Bug 1 fix: Write to scratchpad for BOTH success and failure,
+		// so failed step context is available for retry re-plans.
+		f, _ := os.OpenFile(scratchPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if f != nil {
+			f.WriteString(fmt.Sprintf("\n### Step %d Result (%s):\n%s\n", nextStep.ID, nextStep.Status, nextStep.Result))
+			f.Close()
 		}
 
 		log.Printf("[%s][Master Step %d] Result received", taskID, nextStep.ID)
@@ -401,10 +550,18 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 				llms.TextPart(fmt.Sprintf("Plan updated. Executed step %d.", nextStep.ID)),
 			},
 		})
+
+		// Truncate result for the orchestration context to avoid bloating.
+		// Detailed data is in the scratchpad at logs/scratchpad_<chatID>.md
+		briefResult := nextStep.Result
+		if len(briefResult) > 500 {
+			briefResult = briefResult[:500] + "... [truncated, full detail in scratchpad]"
+		}
+
 		orchContext = append(orchContext, llms.MessageContent{
 			Role: llms.ChatMessageTypeHuman,
 			Parts: []llms.ContentPart{
-				llms.TextPart(fmt.Sprintf("Step %d result: %s\nOutput: %s\n\nPlease update the plan or provide the final answer.", nextStep.ID, nextStep.Status, nextStep.Result)),
+				llms.TextPart(fmt.Sprintf("Step %d result: %s\nOutput: %s\n\nFull details are in the scratchpad. Please update the plan or provide the final answer.", nextStep.ID, nextStep.Status, briefResult)),
 			},
 		})
 	}
@@ -412,8 +569,10 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 	return "I've reached the maximum number of steps for this task. Please try a simpler request.", nil
 }
 
-func (b *MasterBrain) plan(ctx context.Context, messages []llms.MessageContent, chatID string) (*store.Plan, string, bool, error) {
-	// Define the propose_plan tool
+func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent, chatID string, depth int) (*store.Plan, string, bool, error) {
+	if depth > 3 {
+		return nil, "", false, fmt.Errorf("master planning exceeded maximum tool recursion depth (3)")
+	}
 	plannerTools := []llms.Tool{
 		{
 			Type: "function",
@@ -438,8 +597,12 @@ func (b *MasterBrain) plan(ctx context.Context, messages []llms.MessageContent, 
 										"type": "string",
 										"enum": []string{"pending", "completed", "failed"},
 									},
+									"tools": map[string]any{
+										"type":  "array",
+										"items": map[string]any{"type": "string"},
+									},
 								},
-								"required": []string{"id", "description", "status"},
+								"required": []string{"id", "description", "status", "tools"},
 							},
 						},
 					},
@@ -447,11 +610,22 @@ func (b *MasterBrain) plan(ctx context.Context, messages []llms.MessageContent, 
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        "read_scratchpad",
+				Description: "Read the current task scratchpad to see details from previous steps.",
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
+			},
+		},
 	}
 
 	// Planning Turn Timeout (2-minute limit)
 	turnCtx, turnCancel := context.WithTimeout(ctx, 2*time.Minute)
-	resp, err := b.Model.GenerateContent(turnCtx, messages, llms.WithTools(plannerTools))
+	resp, err := b.Model.GenerateContent(turnCtx, *messages, llms.WithTools(plannerTools))
 	turnCancel()
 
 	if err != nil {
@@ -460,6 +634,9 @@ func (b *MasterBrain) plan(ctx context.Context, messages []llms.MessageContent, 
 		}
 		return nil, "", false, err
 	}
+
+	// Log LLM interaction
+	b.Logger.LogLLM(chatID, "planning", *messages, resp.Choices[0].Content, resp.Choices[0].ToolCalls)
 
 	// Track token costs
 	if resp.Choices[0].GenerationInfo != nil {
@@ -473,14 +650,71 @@ func (b *MasterBrain) plan(ctx context.Context, messages []llms.MessageContent, 
 
 	choice := resp.Choices[0]
 
+	// Add AI message to conversation context
+	var assistantParts []llms.ContentPart
+	if choice.Content != "" {
+		assistantParts = append(assistantParts, llms.TextContent{Text: choice.Content})
+	}
+	for _, tc := range choice.ToolCalls {
+		assistantParts = append(assistantParts, tc)
+	}
+	*messages = append(*messages, llms.MessageContent{
+		Role:  llms.ChatMessageTypeAI,
+		Parts: assistantParts,
+	})
+
+	// Bug 6 fix: Two-pass tool call handling.
+	// Pass 1: respond to all read_scratchpad calls before handling propose_plan.
+	hadScratchpadCall := false
+	for _, tc := range choice.ToolCalls {
+		if tc.FunctionCall.Name == "read_scratchpad" {
+			hadScratchpadCall = true
+			scratchPath := fmt.Sprintf("logs/scratchpad_%s.md", chatID)
+			data, _ := os.ReadFile(scratchPath)
+			result := string(data)
+			if result == "" {
+				result = "Scratchpad is empty or doesn't exist yet."
+			}
+			*messages = append(*messages, llms.MessageContent{
+				Role: llms.ChatMessageTypeTool,
+				Parts: []llms.ContentPart{
+					llms.ToolCallResponse{
+						ToolCallID: tc.ID,
+						Name:       tc.FunctionCall.Name,
+						Content:    result,
+					},
+				},
+			})
+		}
+	}
+
+	// Pass 2: handle propose_plan (takes priority — return immediately if found).
 	for _, tc := range choice.ToolCalls {
 		if tc.FunctionCall.Name == "propose_plan" {
 			var plan store.Plan
 			if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &plan); err != nil {
 				return nil, "", false, fmt.Errorf("failed to parse propose_plan arguments: %v", err)
 			}
+			// Add a synthetic tool response to keep the message history consistent.
+			// Without this, any preceding read_scratchpad responses would leave the
+			// propose_plan call unanswered, potentially breaking some LLM providers.
+			*messages = append(*messages, llms.MessageContent{
+				Role: llms.ChatMessageTypeTool,
+				Parts: []llms.ContentPart{
+					llms.ToolCallResponse{
+						ToolCallID: tc.ID,
+						Name:       tc.FunctionCall.Name,
+						Content:    "Plan received.",
+					},
+				},
+			})
 			return &plan, "", false, nil
 		}
+	}
+
+	// If only read_scratchpad was called, recurse for the next planning turn.
+	if hadScratchpadCall {
+		return b.plan(ctx, messages, chatID, depth+1)
 	}
 
 	if choice.Content != "" {

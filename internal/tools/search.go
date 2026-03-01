@@ -13,7 +13,7 @@ type SearchTool struct {
 }
 
 func NewSearchTool() (*SearchTool, error) {
-	ddg, err := duckduckgo.New(10, duckduckgo.DefaultUserAgent)
+	ddg, err := duckduckgo.New(5, duckduckgo.DefaultUserAgent)
 	if err != nil {
 		return nil, err
 	}

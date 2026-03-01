@@ -2,10 +2,11 @@ package store
 
 // Step represents a single sub-task in a broader plan.
 type Step struct {
-	ID          int    `json:"id"`
-	Description string `json:"description"`
-	Status      string `json:"status"` // pending, in_progress, completed, failed
-	Result      string `json:"result"`
+	ID          int      `json:"id"`
+	Description string   `json:"description"`
+	Status      string   `json:"status"` // pending, in_progress, completed, failed
+	Result      string   `json:"result"`
+	Tools       []string `json:"tools"`
 }
 
 // Plan represents a sequence of steps to fulfill a user request.

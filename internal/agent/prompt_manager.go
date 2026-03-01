@@ -77,3 +77,12 @@ func (pm *PromptManager) GetPlannerPrompt() (string, error) {
 	}
 	return string(data), nil
 }
+
+func (pm *PromptManager) GetLeanWorkerPrompt() (string, error) {
+	path := filepath.Join(pm.Directory, "worker_lean.md")
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read lean worker prompt: %v", err)
+	}
+	return string(data), nil
+}
