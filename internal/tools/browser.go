@@ -71,9 +71,7 @@ func (b *BrowserTool) Parameters() map[string]any {
 }
 
 func (b *BrowserTool) initBrowser(ctx context.Context) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
+	// Assumes b.mu is locked by the caller.
 	if b.browserCtx != nil {
 		select {
 		case <-b.browserCtx.Done():
@@ -95,7 +93,24 @@ func (b *BrowserTool) initBrowser(ctx context.Context) error {
 	b.allocCtx, b.allocCancel = chromedp.NewExecAllocator(context.Background(), opts...)
 	b.browserCtx, b.browserCancel = chromedp.NewContext(b.allocCtx)
 
-	return chromedp.Run(b.browserCtx)
+	// Ensure the startup phase respects the caller's context and a reasonable timeout.
+	initCtx, initCancel := context.WithTimeout(b.browserCtx, 15*time.Second)
+	defer initCancel()
+
+	// Monitor caller context.
+	go func() {
+		select {
+		case <-ctx.Done():
+			initCancel()
+		case <-initCtx.Done():
+		}
+	}()
+
+	if err := chromedp.Run(initCtx); err != nil {
+		b.cleanup()
+		return fmt.Errorf("browser startup failed: %w", err)
+	}
+	return nil
 }
 
 func (b *BrowserTool) cleanup() {
@@ -110,6 +125,9 @@ func (b *BrowserTool) cleanup() {
 }
 
 func (b *BrowserTool) Execute(ctx context.Context, input string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	var args struct {
 		Action      string `json:"action"`
 		URL         string `json:"url"`
@@ -123,9 +141,7 @@ func (b *BrowserTool) Execute(ctx context.Context, input string) (string, error)
 	}
 
 	if args.Action == "close" {
-		b.mu.Lock()
 		b.cleanup()
-		b.mu.Unlock()
 		return "Successfully closed the browser.", nil
 	}
 
@@ -141,6 +157,15 @@ func (b *BrowserTool) Execute(ctx context.Context, input string) (string, error)
 	}
 	actionCtx, cancel := context.WithTimeout(b.browserCtx, timeout)
 	defer cancel()
+
+	// Tie the action to the caller context for immediate cancellation if the agent times out.
+	go func() {
+		select {
+		case <-ctx.Done():
+			cancel()
+		case <-actionCtx.Done():
+		}
+	}()
 
 	var result string
 	var err error

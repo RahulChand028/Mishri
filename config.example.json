@@ -1,12 +1,17 @@
 {
   "app": {
     "name": "mishri",
-    "workspace": "./workspace"
+    "workspace": "./workspace",
+    "skills_dir": "./workspace/skills"
   },
   "gateways": {
     "telegram": {
       "token": "YOUR_TELEGRAM_BOT_TOKEN",
       "enabled": true
+    },
+    "discord": {
+      "token": "YOUR_DISCORD_BOT_TOKEN",
+      "enabled": false
     }
   },
   "providers": {

@@ -3,6 +3,7 @@ module github.com/rahul/mishri
 go 1.25.0
 
 require (
+	github.com/bwmarrin/discordgo v0.29.0
 	github.com/chromedp/chromedp v0.14.2
 	github.com/glebarez/go-sqlite v1.22.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
@@ -10,6 +11,7 @@ require (
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/tmc/langchaingo v0.1.14
 	golang.org/x/term v0.40.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -29,10 +31,12 @@ require (
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
+	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/pkoukk/tiktoken-go v0.1.6 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	go.starlark.net v0.0.0-20230302034142-4b1e35fe2254 // indirect
+	golang.org/x/crypto v0.41.0 // indirect
 	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.28.0 // indirect

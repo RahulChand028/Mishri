@@ -31,7 +31,7 @@ A high-tech, real-time command-line interface featuring:
 
 - **Language**: Go (Golang)
 - **Framework**: [LangChainGo](https://github.com/tmc/langchaingo)
-- **Gateways**: Telegram, CLI
+- **Gateways**: Telegram, Discord, CLI
 - **Persistence**: SQLite (via `modernc.org/sqlite`)
 - **CLI**: ANSI Escape Codes, `golang.org/x/term`
 

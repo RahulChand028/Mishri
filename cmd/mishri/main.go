@@ -77,6 +77,23 @@ func main() {
 	systemTool := tools.NewSystemTool()
 	registry.Register(systemTool)
 
+	// Initialize Dynamic Skills
+	if cfg.App.SkillsDir != "" {
+		if err := os.MkdirAll(cfg.App.SkillsDir, 0755); err != nil {
+			log.Printf("Warning: Failed to ensure skills directory exists: %v", err)
+		} else {
+			dynSkills, err := tools.LoadSkills(cfg.App.SkillsDir)
+			if err != nil {
+				log.Printf("Warning: Failed to load dynamic skills: %v", err)
+			} else {
+				for _, skill := range dynSkills {
+					registry.Register(skill)
+					log.Printf("Loaded dynamic skill: %s", skill.Name())
+				}
+			}
+		}
+	}
+
 	// Initialize LLM (using default enabled provider)
 	pName, pCfg := cfg.GetDefaultProvider()
 	if pName == "" {
@@ -112,16 +129,34 @@ func main() {
 
 	brain := agent.NewMasterBrain(llm, worker, history, prompts, logger, dispatcher)
 
-	tg, err := gateway.NewTelegramGateway(tgCfg.Token, brain)
-	if err != nil {
-		log.Fatal(err)
+	var activeGateway gateway.Messenger
+
+	tgCfg, okTg := cfg.GetTelegramConfig()
+	dcCfg, okDc := cfg.GetDiscordConfig()
+
+	if !okTg && !okDc {
+		log.Fatal("No gateways (Telegram, Discord) are enabled or tokens are missing")
+	}
+
+	if okTg {
+		tg, err := gateway.NewTelegramGateway(tgCfg.Token, brain)
+		if err != nil {
+			log.Fatal(err)
+		}
+		activeGateway = tg
+	} else if okDc {
+		dc, err := gateway.NewDiscordGateway(dcCfg.Token, brain)
+		if err != nil {
+			log.Fatal(err)
+		}
+		activeGateway = dc
 	}
 
 	// Start Background Scheduler with a cancelable context
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	scheduler := agent.NewScheduler(brain, history, tg)
+	scheduler := agent.NewScheduler(brain, history, activeGateway)
 	go scheduler.Start(ctx)
 
 	// Start Live Resource Dashboard (1-second updates)
@@ -153,7 +188,7 @@ func main() {
 
 	// Start Gateway in a goroutine so we can wait for context in the main loop
 	go func() {
-		if err := tg.Start(); err != nil {
+		if err := activeGateway.Start(); err != nil {
 			log.Printf("\033[91m[ FAIL ] GATEWAY CRITICAL ERROR: %v\033[0m", err)
 			stop() // stop caller if gateway dies
 		}

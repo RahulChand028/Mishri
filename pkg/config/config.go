@@ -16,6 +16,7 @@ type Config struct {
 type AppConfig struct {
 	Name      string `json:"name"`
 	Workspace string `json:"workspace"`
+	SkillsDir string `json:"skills_dir"`
 }
 
 type GatewayConfig struct {
@@ -66,6 +67,15 @@ func (c *Config) GetTelegramConfig() (GatewayConfig, bool) {
 	tg, ok := c.Gateways["telegram"]
 	if ok && tg.Enabled {
 		return tg, true
+	}
+	return GatewayConfig{}, false
+}
+
+// GetDiscordConfig returns discord config if enabled
+func (c *Config) GetDiscordConfig() (GatewayConfig, bool) {
+	dc, ok := c.Gateways["discord"]
+	if ok && dc.Enabled {
+		return dc, true
 	}
 	return GatewayConfig{}, false
 }
