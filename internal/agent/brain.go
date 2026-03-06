@@ -39,6 +39,10 @@ type HistoryStore interface {
 	SyncPlanSteps(planID int64, steps []store.Step) error
 	SyncPlanAgents(planID int64, agents []store.Agent) error
 	RecordCost(chatID string, model string, promptTokens, completionTokens int) error
+	SaveEscalation(esc *store.EscalationState) (int64, error)
+	LoadEscalation(id int64) (*store.EscalationState, error)
+	GetPendingEscalation(parentChatID string) (*store.EscalationState, error)
+	ResolveEscalation(id int64) error
 }
 
 func NewWorkerBrain(model llms.Model, registry *tools.Registry, history HistoryStore, prompts *PromptManager, gov governance.PolicyEngine, logger *observability.Logger) *WorkerBrain {
@@ -362,6 +366,14 @@ type MasterBrain struct {
 	Prompts    *PromptManager
 	Logger     *observability.Logger
 	Dispatcher *AgentDispatcher
+	Gateway    GatewaySender // For sending mid-execution messages (escalation)
+	Manager    *ManagerAgent // For resuming escalated sub-managers
+}
+
+// GatewaySender is a minimal interface for sending messages to the user.
+// Implemented by gateway.Messenger.
+type GatewaySender interface {
+	Send(chatID string, text string) error
 }
 
 func NewMasterBrain(model llms.Model, worker *WorkerBrain, history HistoryStore, prompts *PromptManager, logger *observability.Logger, dispatcher *AgentDispatcher) *MasterBrain {
@@ -375,9 +387,40 @@ func NewMasterBrain(model llms.Model, worker *WorkerBrain, history HistoryStore,
 	}
 }
 
+// SetGateway sets the gateway sender for mid-execution user communication.
+func (b *MasterBrain) SetGateway(gw GatewaySender) {
+	b.Gateway = gw
+}
+
+// SetManager sets the ManagerAgent for handling team-based tasks.
+func (b *MasterBrain) SetManager(mgr *ManagerAgent) {
+	b.Manager = mgr
+}
+
 func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (string, error) {
 	observability.SetStatus(observability.RoleMaster, "Planning...")
 	defer observability.SetStatus(observability.RoleIdle, "")
+
+	// 0. Check for pending escalation — if user is responding to a Sub-Manager question
+	if b.Manager != nil {
+		esc, err := b.History.GetPendingEscalation(chatID)
+		if err == nil && esc != nil {
+			// This message is the user's answer to a pending escalation
+			log.Printf("[%s] Found pending escalation (ID: %d), resuming sub-manager", chatID, esc.ID)
+			_ = b.History.ResolveEscalation(esc.ID)
+			report, err := b.Manager.Resume(ctx, esc, input)
+			if err != nil {
+				return fmt.Sprintf("Sub-manager resume failed: %v", err), nil
+			}
+			// Check if the resumed sub-manager escalated again
+			if strings.HasPrefix(report, "ESCALATION:") {
+				return b.handleEscalationReport(chatID, report)
+			}
+			b.History.AddMessage(chatID, "human", input)
+			b.History.AddMessage(chatID, "ai", report)
+			return report, nil
+		}
+	}
 
 	// 1. Get Planner Prompt
 	plannerPrompt, err := b.Prompts.GetPlannerPrompt()
@@ -493,10 +536,30 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 
 		// Dispatch to the appropriate agent type.
 		var report string
+		dispatchPrompt := systemPrompt
+		// For manager agents, pass the goal — the ManagerAgent builds its own prompt
+		if nextAgent.Type == store.AgentTypeManager {
+			dispatchPrompt = nextAgent.Goal
+		}
 		if b.Dispatcher != nil {
-			report, err = b.Dispatcher.Dispatch(ctx, string(nextAgent.Type), chatID, nextAgent.ID, systemPrompt, nextAgent.Tools, b.Logger)
+			report, err = b.Dispatcher.Dispatch(ctx, string(nextAgent.Type), chatID, nextAgent.ID, dispatchPrompt, nextAgent.Tools, b.Logger)
 		} else {
-			report, err = b.Worker.ThinkWithSystemPrompt(ctx, chatID, "Execute your task.", nextAgent.ID, nextAgent.Tools, systemPrompt)
+			report, err = b.Worker.ThinkWithSystemPrompt(ctx, chatID, "Execute your task.", nextAgent.ID, nextAgent.Tools, dispatchPrompt)
+		}
+
+		// Check if the dispatched agent returned an escalation (from ManagerAgent)
+		if err == nil && strings.HasPrefix(report, "ESCALATION:") {
+			nextAgent.Status = "escalated"
+			nextAgent.Report = report
+			_ = b.History.SyncPlanAgents(planID, agentPlan.Agents)
+
+			result, escErr := b.handleEscalationReport(chatID, report)
+			if escErr != nil {
+				return fmt.Sprintf("Escalation handling failed: %v", escErr), nil
+			}
+			b.History.AddMessage(chatID, "human", input)
+			b.History.AddMessage(chatID, "ai", result)
+			return result, nil
 		}
 
 		if err != nil {
@@ -560,7 +623,7 @@ func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent,
 									},
 									"type": map[string]any{
 										"type": "string",
-										"enum": []string{"react", "code", "reflection"},
+										"enum": []string{"react", "code", "reflection", "manager"},
 									},
 									"goal": map[string]any{
 										"type": "string",
@@ -684,4 +747,28 @@ func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent,
 	}
 
 	return nil, "", false, fmt.Errorf("planner failed to provide a plan or text response")
+}
+
+// handleEscalationReport parses an ESCALATION: report from a ManagerAgent
+// and formats it as a message to the user.
+func (b *MasterBrain) handleEscalationReport(chatID string, report string) (string, error) {
+	escJSON := strings.TrimPrefix(report, "ESCALATION:")
+	var escResult EscalationResult
+	if err := json.Unmarshal([]byte(escJSON), &escResult); err != nil {
+		return fmt.Sprintf("Sub-manager needs your input but the request was malformed: %s", escJSON), nil
+	}
+
+	// Format a user-friendly message
+	var msg strings.Builder
+	msg.WriteString("🤖 **Team needs your input:**\n\n")
+	msg.WriteString(escResult.Question)
+	if len(escResult.Options) > 0 {
+		msg.WriteString("\n\n**Options:**\n")
+		for i, opt := range escResult.Options {
+			msg.WriteString(fmt.Sprintf("%d. %s\n", i+1, opt))
+		}
+		msg.WriteString("\nPlease reply with your choice.")
+	}
+
+	return msg.String(), nil
 }

@@ -21,6 +21,7 @@ const (
 	AgentTypeReact      AgentType = "react"
 	AgentTypeCode       AgentType = "code"
 	AgentTypeReflection AgentType = "reflection"
+	AgentTypeManager    AgentType = "manager"
 )
 
 // Agent represents an autonomous agent spawned by the Manager to complete a phase of work.
@@ -39,4 +40,20 @@ type Agent struct {
 // AgentPlan represents a pipeline of autonomous agents spawned for a task.
 type AgentPlan struct {
 	Agents []Agent `json:"agents"`
+}
+
+// EscalationState captures the full state of a Sub-Manager when it pauses
+// for user input. This is persisted to SQLite so the Sub-Manager can resume
+// after the user responds.
+type EscalationState struct {
+	ID              int64  `json:"id"`               // Auto-generated DB ID
+	ParentChatID    string `json:"parent_chat_id"`   // Original user's chatID
+	SubChatID       string `json:"sub_chat_id"`      // Sub-Manager's workspace chatID
+	PlanID          int64  `json:"plan_id"`          // Sub-Manager's plan in SQLite
+	Goal            string `json:"goal"`             // Original goal given to Sub-Manager
+	CompletedAgents string `json:"completed_agents"` // JSON of completed agents with reports
+	PendingAgents   string `json:"pending_agents"`   // JSON of agents not yet run
+	Question        string `json:"question"`         // What to ask the user
+	Options         string `json:"options"`          // JSON array of optional choices
+	Status          string `json:"status"`           // "pending" | "answered" | "expired"
 }

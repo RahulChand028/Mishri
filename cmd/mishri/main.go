@@ -129,6 +129,11 @@ func main() {
 
 	brain := agent.NewMasterBrain(llm, worker, history, prompts, logger, dispatcher)
 
+	// Create the ManagerAgent for hierarchical team tasks
+	managerAgent := agent.NewManagerAgent(llm, worker, history, prompts, logger, dispatcher)
+	dispatcher.Register("manager", managerAgent)
+	brain.SetManager(managerAgent)
+
 	var activeGateway gateway.Messenger
 
 	tgCfg, okTg := cfg.GetTelegramConfig()
@@ -151,6 +156,9 @@ func main() {
 		}
 		activeGateway = dc
 	}
+
+	// Wire gateway into brain for escalation messages
+	brain.SetGateway(activeGateway)
 
 	// Start Background Scheduler with a cancelable context
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

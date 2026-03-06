@@ -15,8 +15,11 @@ Choose the correct agent type for each phase of work:
 | `react` | Browsing, clicking, searching, navigating, GUI automation |
 | `code` | File parsing, data analysis, calculations, shell scripts |
 | `reflection` | Writing, summarizing, drafting reports or emails |
+| `manager` | **Only when the user explicitly asks to "create a team"**. Spawns a Sub-Manager that creates and coordinates its own team of workers |
 
 **Default to `react` if unsure.**
+
+> **IMPORTANT**: Only use `manager` when the user explicitly requests team creation (e.g., "create a team to...", "build a team for..."). For all other tasks, use `react`, `code`, or `reflection` directly. A `manager` agent gets only a goal — it creates its own team internally. Do NOT give it worker tools; it only needs the `escalate` tool (provided automatically).
 
 ---
 
@@ -81,7 +84,7 @@ Examples:
 ```
 
 **Fields:**
-- `type`: `"react"` | `"code"` | `"reflection"`
+- `type`: `"react"` | `"code"` | `"reflection"` | `"manager"` (use `manager` only when user explicitly requests a team)
 - `goal`: Short label (for your tracking)
 - `system_prompt`: The complete, self-contained prompt the agent will receive
 - `tools`: Array of tool names the agent may use (e.g. `["browser", "search", "filesystem"]`)

@@ -76,6 +76,20 @@ func NewHistoryStore(dbPath string) (*HistoryStore, error) {
 		`CREATE INDEX IF NOT EXISTS idx_steps_plan_id ON steps(plan_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_chat_id ON tasks(chat_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_plans_chat_id ON plans(chat_id);`,
+		`CREATE TABLE IF NOT EXISTS escalations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			parent_chat_id TEXT,
+			sub_chat_id TEXT,
+			plan_id INTEGER,
+			goal TEXT,
+			completed_agents TEXT,
+			pending_agents TEXT,
+			question TEXT,
+			options TEXT,
+			status TEXT DEFAULT 'pending',
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_escalations_parent_chat ON escalations(parent_chat_id, status);`,
 	}
 	for _, q := range queries {
 		_, err = db.Exec(q)
@@ -266,4 +280,54 @@ func (h *HistoryStore) SyncPlanAgents(planID int64, agents []Agent) error {
 		}
 	}
 	return nil
+}
+
+// SaveEscalation persists the Sub-Manager's state when it pauses for user input.
+func (h *HistoryStore) SaveEscalation(esc *EscalationState) (int64, error) {
+	res, err := h.DB.Exec(
+		`INSERT INTO escalations (parent_chat_id, sub_chat_id, plan_id, goal, completed_agents, pending_agents, question, options, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+		esc.ParentChatID, esc.SubChatID, esc.PlanID, esc.Goal,
+		esc.CompletedAgents, esc.PendingAgents, esc.Question, esc.Options,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// LoadEscalation retrieves a pending escalation by ID.
+func (h *HistoryStore) LoadEscalation(id int64) (*EscalationState, error) {
+	row := h.DB.QueryRow(
+		`SELECT id, parent_chat_id, sub_chat_id, plan_id, goal, completed_agents, pending_agents, question, options, status
+		 FROM escalations WHERE id = ?`, id,
+	)
+	var esc EscalationState
+	err := row.Scan(&esc.ID, &esc.ParentChatID, &esc.SubChatID, &esc.PlanID, &esc.Goal,
+		&esc.CompletedAgents, &esc.PendingAgents, &esc.Question, &esc.Options, &esc.Status)
+	if err != nil {
+		return nil, err
+	}
+	return &esc, nil
+}
+
+// GetPendingEscalation retrieves the most recent pending escalation for a chat.
+func (h *HistoryStore) GetPendingEscalation(parentChatID string) (*EscalationState, error) {
+	row := h.DB.QueryRow(
+		`SELECT id, parent_chat_id, sub_chat_id, plan_id, goal, completed_agents, pending_agents, question, options, status
+		 FROM escalations WHERE parent_chat_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1`, parentChatID,
+	)
+	var esc EscalationState
+	err := row.Scan(&esc.ID, &esc.ParentChatID, &esc.SubChatID, &esc.PlanID, &esc.Goal,
+		&esc.CompletedAgents, &esc.PendingAgents, &esc.Question, &esc.Options, &esc.Status)
+	if err != nil {
+		return nil, err
+	}
+	return &esc, nil
+}
+
+// ResolveEscalation marks an escalation as answered.
+func (h *HistoryStore) ResolveEscalation(id int64) error {
+	_, err := h.DB.Exec(`UPDATE escalations SET status = 'answered' WHERE id = ?`, id)
+	return err
 }
