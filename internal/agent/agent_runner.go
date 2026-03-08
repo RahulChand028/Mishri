@@ -12,7 +12,7 @@ import (
 // AgentRunner is the common interface for all autonomous agent types.
 // The Manager dispatches to the correct agent type via this interface.
 type AgentRunner interface {
-	Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string) (string, error)
+	Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int) (string, error)
 }
 
 // AgentDispatcher holds all registered agent types and dispatches by type string.
@@ -34,7 +34,7 @@ func (d *AgentDispatcher) Register(agentType string, runner AgentRunner) {
 
 // Dispatch runs the appropriate agent for the given type.
 // Falls back to "react" if the type is unknown.
-func (d *AgentDispatcher) Dispatch(ctx context.Context, agentType, chatID string, agentID int, systemPrompt string, tools []string, logger *observability.Logger) (string, error) {
+func (d *AgentDispatcher) Dispatch(ctx context.Context, agentType, chatID string, agentID int, systemPrompt string, tools []string, logger *observability.Logger, parentChatID, parentTaskID string, parentAgentID int) (string, error) {
 	runner, ok := d.runners[agentType]
 	if !ok {
 		log.Printf("[Agent %d] Unknown agent type %q, falling back to react", agentID, agentType)
@@ -45,7 +45,7 @@ func (d *AgentDispatcher) Dispatch(ctx context.Context, agentType, chatID string
 	}
 
 	log.Printf("[Agent %d] Dispatching to %s agent", agentID, agentType)
-	result, err := runner.Run(ctx, chatID, agentID, systemPrompt, tools)
+	result, err := runner.Run(ctx, chatID, agentID, systemPrompt, tools, parentChatID, parentTaskID, parentAgentID)
 	if err != nil {
 		return "", err
 	}

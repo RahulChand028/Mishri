@@ -25,7 +25,7 @@ func NewCodeAgent(model llms.Model, worker *WorkerBrain, logger *observability.L
 
 // Run executes the CodeAgent. It delegates to WorkerBrain but with a targeted system
 // prompt that instructs the agent to write and execute code. The shell tool handles execution.
-func (a *CodeAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string) (string, error) {
+func (a *CodeAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int) (string, error) {
 	observability.SetStatus(observability.RoleSlave, fmt.Sprintf("[CODE] Agent %d", agentID))
 	defer observability.SetStatus(observability.RoleIdle, "")
 
@@ -52,7 +52,7 @@ func (a *CodeAgent) Run(ctx context.Context, chatID string, agentID int, systemP
 		reportFormatGuide,
 	)
 
-	result, err := a.worker.ThinkWithSystemPrompt(ctx, chatID, taskMessage, agentID, tools, fullPrompt)
+	result, err := a.worker.ThinkWithSystemPrompt(ctx, chatID, parentTaskID, taskMessage, agentID, tools, fullPrompt)
 	if err != nil {
 		return buildReport("failed", "", "", err.Error(), "Retry with a different script"), nil
 	}

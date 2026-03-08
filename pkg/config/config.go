@@ -79,3 +79,16 @@ func (c *Config) GetDiscordConfig() (GatewayConfig, bool) {
 	}
 	return GatewayConfig{}, false
 }
+
+// SaveConfig writes the given Config struct back to the specified file path
+func SaveConfig(cfg *Config, path string) error {
+file, err := os.Create(path)
+if err != nil {
+return err
+}
+defer file.Close()
+
+encoder := json.NewEncoder(file)
+encoder.SetIndent("", "  ")
+return encoder.Encode(cfg)
+}

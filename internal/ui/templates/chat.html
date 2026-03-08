@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mishri — Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- markdown-it for rendering agent responses as Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it@14/dist/markdown-it.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: #0b0e14;
+            color: #e2e8f0;
+            background-image: radial-gradient(at 0% 0%, rgba(0, 255, 65, 0.03) 0%, transparent 50%), radial-gradient(at 100% 100%, rgba(59, 130, 246, 0.03) 0%, transparent 50%);
+        }
+
+        #messages {
+            scroll-behavior: smooth;
+        }
+
+        .msg-user {
+            background: rgba(26, 58, 42, 0.4);
+            border: 1px solid rgba(0, 255, 65, 0.2);
+            backdrop-filter: blur(8px);
+            align-self: flex-end;
+            border-radius: 12px 12px 0 12px !important;
+        }
+
+        .msg-assist {
+            background: rgba(22, 27, 34, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(12px);
+            align-self: flex-start;
+            border-radius: 12px 12px 12px 0 !important;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .msg-think {
+            background: rgba(26, 31, 46, 0.5);
+            border: 1px solid rgba(245, 158, 11, 0.2);
+            backdrop-filter: blur(4px);
+            color: #fbbf24;
+            font-style: italic;
+            border-radius: 8px !important;
+        }
+
+        .msg-error {
+            background: rgba(45, 21, 21, 0.5);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            backdrop-filter: blur(4px);
+            color: #fca5a5;
+            border-radius: 8px !important;
+        }
+
+        /* Markdown rendered output */
+        .prose p {
+            margin: 0.5rem 0;
+        }
+
+        .prose pre {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            overflow-x: auto;
+            margin: 0.5rem 0;
+        }
+
+        .prose code {
+            color: #00ff41;
+            font-size: 0.875rem;
+        }
+
+        .prose pre code {
+            color: #e2e8f0;
+        }
+
+        .prose ul,
+        .prose ol {
+            padding-left: 1.5rem;
+            margin: 0.5rem 0;
+        }
+
+        .prose li {
+            margin: 0.2rem 0;
+        }
+
+        .prose h1,
+        .prose h2,
+        .prose h3 {
+            color: #00ff41;
+            font-weight: 700;
+            margin: 0.75rem 0 0.25rem;
+        }
+
+        .prose a {
+            color: #60a5fa;
+            text-decoration: underline;
+        }
+
+        .prose blockquote {
+            border-left: 3px solid #30363d;
+            padding-left: 1rem;
+            color: #9ca3af;
+        }
+
+        /* Neon cursor blink */
+        @keyframes blink {
+
+            0%,
+            100% {
+                opacity: 1
+            }
+
+            50% {
+                opacity: 0
+            }
+        }
+
+        .cursor {
+            display: inline-block;
+            width: 8px;
+            height: 1em;
+            background: #00ff41;
+            vertical-align: text-bottom;
+            animation: blink 1s step-start infinite;
+            margin-left: 2px;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0d1117;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #30363d;
+            border-radius: 3px;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #00ff41;
+            box-shadow: 0 0 0 1px #00ff41;
+        }
+
+        .btn-send {
+            background: linear-gradient(135deg, #00ff41 0%, #00cc33 100%);
+            color: #0d1117;
+            font-weight: 700;
+            border: none;
+            border-radius: 8px;
+            padding: 0.625rem 0.6rem;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.875rem;
+            min-width: 90px;
+            flex-shrink: 0;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 14px 0 rgba(0, 255, 65, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn-send:hover:not(:disabled) {
+            background: linear-gradient(135deg, #34d058 0%, #28a745 100%);
+            box-shadow: 0 6px 20px rgba(0, 255, 65, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .btn-send:active:not(:disabled) {
+            transform: translateY(0);
+            box-shadow: 0 2px 10px rgba(0, 255, 65, 0.2);
+        }
+
+        .btn-send:disabled {
+            background: #30363d !important;
+            color: #8b949e !important;
+            cursor: not-allowed;
+            box-shadow: none !important;
+            opacity: 0.6;
+        }
+
+        .btn-send svg {
+            transition: transform 0.2s;
+        }
+
+        .btn-send:hover:not(:disabled) svg {
+            transform: translateX(2px) translateY(-2px);
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                opacity: 1;
+            }
+
+            50% {
+                transform: scale(1.2);
+                opacity: 0.7;
+            }
+
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        .pulse {
+            animation: pulse 1.5s infinite ease-in-out;
+            display: inline-block;
+        }
+
+        textarea {
+            transition: all 0.2s ease;
+        }
+
+        textarea:focus {
+            border-color: #00ff41;
+            box-shadow: 0 0 0 2px rgba(0, 255, 65, 0.2);
+            background: #161b22;
+        }
+    </style>
+</head>
+
+<body class="flex flex-col" style="height:100vh;">
+
+    <div class="flex flex-col h-full max-w-4xl mx-auto w-full" x-data="chatApp()">
+
+        <!-- Top Nav -->
+        <nav
+            style="background:#161b22; border-bottom:1px solid #30363d; padding:0.75rem 1.5rem; display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+            <div style="display:flex; align-items:center; gap:0.75rem;">
+                <span style="color:#00ff41; font-size:1.25rem; font-weight:700;">⬡ Mishri</span>
+                <span style="color:#6b7280; font-size:0.75rem;">Agentic Chat</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:1rem;">
+                <!-- Status indicator -->
+                <div style="display:flex; align-items:center; gap:0.375rem;">
+                    <span :style="wsReady ? 'background:#00ff41;' : 'background:#ef4444;'"
+                        style="width:8px;height:8px;border-radius:50%;display:inline-block;"></span>
+                    <span style="font-size:0.75rem; color:#9ca3af;"
+                        x-text="wsReady ? 'Connected' : 'Disconnected'"></span>
+                </div>
+                <a href="/"
+                    style="font-size:0.75rem; color:#9ca3af; text-decoration:none; padding:0.25rem 0.5rem; border:1px solid #30363d; border-radius:4px;"
+                    onmouseover="this.style.borderColor='#00ff41'" onmouseout="this.style.borderColor='#30363d'">⚙
+                    Config</a>
+                <button @click="clearChat"
+                    style="font-size:0.75rem; color:#9ca3af; background:none; border:1px solid #30363d; border-radius:4px; padding:0.25rem 0.5rem; cursor:pointer;"
+                    onmouseover="this.style.borderColor='#ef4444';this.style.color='#ef4444'"
+                    onmouseout="this.style.borderColor='#30363d';this.style.color='#9ca3af'">✕ Clear</button>
+            </div>
+        </nav>
+
+        <!-- Messages Area -->
+        <div id="messages"
+            style="flex:1; overflow-y:auto; padding:1.5rem; display:flex; flex-direction:column; gap:1rem;">
+
+            <!-- Welcome message -->
+            <div x-show="messages.length === 0" style="text-align:center; margin:auto; padding:2rem;">
+                <div style="font-size:3rem; margin-bottom:0.5rem;">⬡</div>
+                <h2 style="color:#00ff41; font-size:1.25rem; font-weight:700; margin-bottom:0.5rem;">Mishri is ready
+                </h2>
+                <p style="color:#6b7280; font-size:0.875rem;">Ask anything. The agent will plan, research, and respond.
+                </p>
+                <div style="margin-top:1.5rem; display:flex; flex-wrap:wrap; gap:0.5rem; justify-content:center;">
+                    <template x-for="s in suggestions">
+                        <button @click="sendSuggestion(s)"
+                            style="background:#161b22; border:1px solid #30363d; border-radius:6px; padding:0.5rem 0.875rem; font-size:0.8rem; color:#9ca3af; cursor:pointer; font-family:inherit;"
+                            onmouseover="this.style.borderColor='#00ff41';this.style.color='#00ff41'"
+                            onmouseout="this.style.borderColor='#30363d';this.style.color='#9ca3af'" x-text="s">
+                        </button>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Message list -->
+            <template x-for="(msg, idx) in messages" :key="idx">
+                <div :class="`msg-${msg.type} max-w-[85%]`" style="padding:1rem 1.25rem;">
+                    <!-- Header -->
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:0.375rem;">
+                        <span style="font-size:0.7rem; font-weight:800; opacity:0.8; letter-spacing:0.1em; text-transform:uppercase;"
+                            :style="msg.type==='user' ? 'color:#00ff41;' : msg.type==='assistant' ? 'color:#60a5fa;' : msg.type==='error' ? 'color:#ef4444;' : 'color:#f59e0b;'"
+                            x-text="msg.type==='user' ? 'You' : msg.type==='assistant' ? 'Mishri' : msg.type==='error' ? 'Error' : 'Thinking'">
+                        </span>
+                        <span style="font-size:0.65rem; color:#6b7280;" x-text="msg.time"></span>
+                    </div>
+                    <!-- Content -->
+                    <div class="prose max-w-none" style="font-size:0.925rem; line-height:1.7; color:#d1d5db;"
+                        x-html="msg.type==='assistant' ? renderMarkdown(msg.content) : escapeHtml(msg.content)">
+                    </div>
+                </div>
+            </template>
+
+            <!-- Typing indicator -->
+            <div x-show="thinking" style="display:flex; align-items:center; gap:0.5rem; padding:0.5rem 1rem;">
+                <span style="color:#f59e0b; font-size:0.75rem;">⬡ MISHRI</span>
+                <span style="color:#6b7280; font-size:0.875rem; font-style:italic;">thinking</span>
+                <span class="cursor"></span>
+            </div>
+
+            <!-- Scroll anchor -->
+            <div id="bottom"></div>
+        </div>
+
+        <div style="background:rgba(22, 27, 34, 0.8); backdrop-filter:blur(12px); border-top:1px solid rgba(255,255,255,0.1); padding:1.25rem 1.5rem; flex-shrink:0; box-shadow:0 -10px 30px rgba(0,0,0,0.3);">
+            <div style="display:flex; gap:1rem; align-items:flex-end; max-width:56rem; margin:0 auto;">
+                <textarea x-model="draft" @keydown.enter.prevent="handleEnter($event)"
+                    placeholder="Message Mishri..."
+                    :disabled="thinking || !wsReady" rows="1"
+                    class="cyber-input"
+                    style="flex:1; background:rgba(13, 17, 23, 0.7); border:1px solid rgba(255,255,255,0.1); border-radius:12px; padding:0.75rem 1rem; color:#e2e8f0; font-family:inherit; font-size:0.95rem; resize:none; min-height:3rem; max-height:12rem; transition:all 0.2s; box-shadow:inset 0 2px 4px rgba(0,0,0,0.2);"
+                    x-ref="textarea" @input="autoResize"></textarea>
+                <button @click="sendMessage" :disabled="!draft.trim() || thinking || !wsReady" class="btn-send" style="height:3rem;">
+                    <span x-show="!thinking" style="display: flex; align-items: center; gap: 0.5rem;">
+                        Send
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </span>
+                    <span x-show="thinking" class="pulse">🧠</span>
+                </button>
+            </div>
+            <p style="font-size:0.65rem; color:#4b5563; margin-top:0.625rem; text-align:center; letter-spacing:0.02em;">
+                Mishri autonomous agent • Uses search, shell, and browser
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const md = markdownit({ html: false, linkify: true, typographer: true, breaks: true });
+
+        function chatApp() {
+            return {
+                messages: [],
+                draft: '',
+                thinking: false,
+                wsReady: false,
+                ws: null,
+                suggestions: [
+                    'What can you do?',
+                    'Search for the latest AI news',
+                    'What is the current time and system info?',
+                    'Write a hello world script in Python and run it',
+                ],
+
+                init() {
+                    this.connectWS();
+                },
+
+                connectWS() {
+                    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    this.ws = new WebSocket(`${protocol}//${location.host}/ws/chat`);
+
+                    this.ws.onopen = () => { this.wsReady = true; };
+                    this.ws.onclose = () => {
+                        this.wsReady = false;
+                        this.thinking = false;
+                        // Auto-reconnect after 3s
+                        setTimeout(() => this.connectWS(), 3000);
+                    };
+                    this.ws.onerror = () => { this.wsReady = false; };
+
+                    this.ws.onmessage = (evt) => {
+                        const msg = JSON.parse(evt.data);
+                        if (msg.type === 'thinking') {
+                            this.thinking = true;
+                            return;
+                        }
+                        this.thinking = false;
+                        // Remove any lingering "thinking" placeholder messages
+                        this.messages = this.messages.filter(m => m.type !== 'thinking');
+                        this.messages.push({ type: msg.type, content: msg.content, time: this.now() });
+                        this.$nextTick(() => this.scrollBottom());
+                    };
+                },
+
+                sendMessage() {
+                    const text = this.draft.trim();
+                    if (!text || this.thinking || !this.wsReady) return;
+                    this.messages.push({ type: 'user', content: text, time: this.now() });
+                    this.ws.send(JSON.stringify({ type: 'user', content: text }));
+                    this.draft = '';
+                    this.$nextTick(() => {
+                        this.$refs.textarea.style.height = 'auto';
+                        this.scrollBottom();
+                    });
+                },
+
+                sendSuggestion(text) {
+                    this.draft = text;
+                    this.sendMessage();
+                },
+
+                handleEnter(evt) {
+                    if (evt.shiftKey) {
+                        // Allow newline
+                        this.draft += '\n';
+                        this.$nextTick(() => this.autoResize());
+                    } else {
+                        this.sendMessage();
+                    }
+                },
+
+                autoResize() {
+                    const el = this.$refs.textarea;
+                    el.style.height = 'auto';
+                    el.style.height = Math.min(el.scrollHeight, 128) + 'px';
+                },
+
+                clearChat() {
+                    this.messages = [];
+                },
+
+                scrollBottom() {
+                    const el = document.getElementById('bottom');
+                    if (el) el.scrollIntoView({ behavior: 'smooth' });
+                },
+
+                renderMarkdown(text) {
+                    return md.render(text || '');
+                },
+
+                escapeHtml(text) {
+                    return (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+                },
+
+                now() {
+                    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                }
+            };
+        }
+    </script>
+</body>
+
+</html>

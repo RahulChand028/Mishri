@@ -51,15 +51,15 @@ func NewManagerAgent(model llms.Model, worker *WorkerBrain, history HistoryStore
 }
 
 // Run implements AgentRunner. This is the entry point when MasterBrain dispatches a manager agent.
-func (m *ManagerAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string) (string, error) {
-	goal := systemPrompt // For manager agents, the system prompt IS the goal
+func (m *ManagerAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int) (string, error) {
 	subChatID := fmt.Sprintf("sub_%s_%d", chatID, agentID)
+	goal := systemPrompt // The manager is given the goal as the system prompt by the planner
 
 	log.Printf("[Agent %d][MANAGER] Starting sub-manager for goal: %s", agentID, goal)
 	observability.SetStatus(observability.RoleMaster, fmt.Sprintf("[TEAM] Agent %d: %s", agentID, truncate(goal, 60)))
 	defer observability.SetStatus(observability.RoleIdle, "")
 
-	return m.execute(ctx, chatID, subChatID, 0, goal, nil, nil)
+	return m.execute(ctx, chatID, subChatID, 0, goal, nil, nil, chatID, parentTaskID, agentID)
 }
 
 // Resume continues a Sub-Manager's execution after an escalation was answered.
@@ -86,16 +86,18 @@ func (m *ManagerAgent) Resume(ctx context.Context, esc *store.EscalationState, a
 	// Inject the answer into the sub-manager's conversation history
 	_ = m.history.AddMessage(esc.SubChatID, "human", fmt.Sprintf("User responded to your escalation: %s", answer))
 
-	return m.execute(ctx, esc.ParentChatID, esc.SubChatID, esc.PlanID, esc.Goal, completedAgents, priorReports)
+	history, _ := m.history.GetHistory(esc.SubChatID, 100)
+
+	return m.execute(ctx, esc.ParentChatID, esc.SubChatID, esc.PlanID, esc.Goal, priorReports, history, esc.ParentChatID, esc.ParentTaskID, esc.ParentAgentID)
 }
 
 // execute is the core orchestration loop for the Sub-Manager.
 // It creates its own team plan, dispatches workers, and handles escalation.
 // If existingPlanID > 0, it reuses the plan; otherwise creates a new one.
-func (m *ManagerAgent) execute(ctx context.Context, parentChatID, subChatID string, existingPlanID int64, goal string, alreadyCompleted []store.Agent, priorReports []string) (string, error) {
+func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, existingPlanID int64, goal string, priorReports []string, history []llms.MessageContent, realParentChatID, realParentTaskID string, realParentAgentID int) (string, error) {
 	// Initialize scratchpad for this sub-team
 	scratchPath := fmt.Sprintf("logs/scratchpad_%s.md", subChatID)
-	if alreadyCompleted == nil {
+	if len(priorReports) == 0 && len(history) == 0 { // Check if it's a fresh run
 		// Fresh run — initialize scratchpad
 		_ = os.WriteFile(scratchPath, []byte("# Sub-Manager Scratchpad\nGoal: "+goal+"\n"), 0644)
 	}
@@ -109,6 +111,7 @@ func (m *ManagerAgent) execute(ctx context.Context, parentChatID, subChatID stri
 	} else {
 		planID, _ = m.history.SavePlan(subChatID, goal)
 	}
+	taskID := fmt.Sprintf("plan_%d", planID)
 
 	// Build the sub-manager's planning prompt
 	subManagerPrompt := m.buildSubManagerPrompt(goal)
@@ -157,8 +160,8 @@ func (m *ManagerAgent) execute(ctx context.Context, parentChatID, subChatID stri
 		}
 
 		// Ask sub-manager LLM for plan
-		orchContext = trimOrchContext(orchContext, 12)
-		agentPlan, rawResponse, isDone, isEscalation, escQuestion, escOptions, planErr := m.plan(ctx, &orchContext, subChatID)
+		orchContext = trimOrchContext(orchContext, 14)
+		agentPlan, rawResponse, isDone, isEscalation, escQuestion, escOptions, planErr := m.plan(ctx, &orchContext, subChatID, taskID, realParentChatID, realParentTaskID, realParentAgentID)
 
 		if planErr != nil {
 			os.Remove(scratchPath)
@@ -173,7 +176,7 @@ func (m *ManagerAgent) execute(ctx context.Context, parentChatID, subChatID stri
 
 		// Sub-manager wants to escalate to user
 		if isEscalation {
-			return m.handleEscalation(parentChatID, subChatID, planID, goal, priorReports, escQuestion, escOptions)
+			return m.handleEscalation(realParentChatID, realParentTaskID, subChatID, planID, goal, priorReports, escQuestion, escOptions, realParentAgentID)
 		}
 
 		if agentPlan == nil {
@@ -227,12 +230,13 @@ func (m *ManagerAgent) execute(ctx context.Context, parentChatID, subChatID stri
 		}
 
 		// Dispatch worker
+		m.logger.LogAgentStart(subChatID, taskID, realParentChatID, realParentTaskID, realParentAgentID, nextAgent.ID, string(nextAgent.Type), nextAgent.Goal)
 		var report string
 		var err error
 		if m.dispatcher != nil {
-			report, err = m.dispatcher.Dispatch(ctx, string(nextAgent.Type), subChatID, nextAgent.ID, workerPrompt, nextAgent.Tools, m.logger)
+			report, err = m.dispatcher.Dispatch(ctx, string(nextAgent.Type), subChatID, nextAgent.ID, workerPrompt, nextAgent.Tools, m.logger, realParentChatID, realParentTaskID, realParentAgentID)
 		} else {
-			report, err = m.worker.ThinkWithSystemPrompt(ctx, subChatID, "Execute your task.", nextAgent.ID, nextAgent.Tools, workerPrompt)
+			report, err = m.worker.ThinkWithSystemPrompt(ctx, subChatID, taskID, workerPrompt, nextAgent.ID, nextAgent.Tools, workerPrompt)
 		}
 
 		if err != nil {
@@ -252,12 +256,13 @@ func (m *ManagerAgent) execute(ctx context.Context, parentChatID, subChatID stri
 		}
 
 		_ = m.history.SyncPlanAgents(planID, agentPlan.Agents)
+		m.logger.LogAgentEnd(subChatID, taskID, nextAgent.ID, nextAgent.Status, nextAgent.Report)
 		log.Printf("[%s][Sub-Agent %d] Status=%s", subChatID, nextAgent.ID, nextAgent.Status)
 
 		// Feed result back to sub-manager
 		brief := nextAgent.Report
-		if len(brief) > 800 {
-			brief = brief[:800] + "... [truncated]"
+		if len(brief) > 2000 {
+			brief = brief[:2000] + "... [truncated]"
 		}
 		orchContext = append(orchContext, llms.MessageContent{
 			Role:  llms.ChatMessageTypeAI,
@@ -274,7 +279,7 @@ func (m *ManagerAgent) execute(ctx context.Context, parentChatID, subChatID stri
 }
 
 // handleEscalation saves the Sub-Manager's state and returns an escalation result.
-func (m *ManagerAgent) handleEscalation(parentChatID, subChatID string, planID int64, goal string, priorReports []string, question string, options []string) (string, error) {
+func (m *ManagerAgent) handleEscalation(parentChatID, parentTaskID, subChatID string, planID int64, goal string, priorReports []string, question string, options []string, parentAgentID int) (string, error) {
 	// Build completed agents from prior reports
 	var completedAgents []store.Agent
 	for i, r := range priorReports {
@@ -297,6 +302,7 @@ func (m *ManagerAgent) handleEscalation(parentChatID, subChatID string, planID i
 		PendingAgents:   "[]", // Will be re-planned on resume
 		Question:        question,
 		Options:         string(optionsJSON),
+		ParentAgentID:   parentAgentID,
 		Status:          "pending",
 	}
 
@@ -318,7 +324,7 @@ func (m *ManagerAgent) handleEscalation(parentChatID, subChatID string, planID i
 }
 
 // plan calls the LLM with propose_plan + escalate tools and returns the plan or escalation.
-func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent, chatID string) (*store.AgentPlan, string, bool, bool, string, []string, error) {
+func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent, chatID, taskID, parentChatID, parentTaskID string, parentAgentID int) (*store.AgentPlan, string, bool, bool, string, []string, error) {
 	plannerTools := []llms.Tool{
 		{
 			Type: "function",
@@ -383,6 +389,7 @@ func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent
 	var assistantParts []llms.ContentPart
 	if choice.Content != "" {
 		assistantParts = append(assistantParts, llms.TextContent{Text: choice.Content})
+		m.logger.LogReasoning(chatID, taskID, 0, choice.Content)
 	}
 	for _, tc := range choice.ToolCalls {
 		assistantParts = append(assistantParts, tc)
@@ -396,9 +403,11 @@ func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent
 	for _, tc := range choice.ToolCalls {
 		if tc.FunctionCall.Name == "propose_plan" {
 			var agentPlan store.AgentPlan
+			m.logger.LogToolCall(chatID, taskID, 0, "propose_plan", tc.FunctionCall.Arguments)
 			if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &agentPlan); err != nil {
 				return nil, "", false, false, "", nil, fmt.Errorf("failed to parse propose_plan: %v", err)
 			}
+			m.logger.LogToolResult(chatID, taskID, 0, "propose_plan", "Plan received.")
 			*messages = append(*messages, llms.MessageContent{
 				Role: llms.ChatMessageTypeTool,
 				Parts: []llms.ContentPart{
@@ -409,6 +418,18 @@ func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent
 					},
 				},
 			})
+
+			// Emit plan event for UI
+			m.logger.Log(observability.Event{
+				Type:          observability.EventTypePlan,
+				ChatID:        chatID,
+				TaskID:        taskID,
+				ParentChatID:  parentChatID,
+				ParentTaskID:  parentTaskID,
+				ParentAgentID: parentAgentID,
+				Data:          &agentPlan,
+			})
+
 			return &agentPlan, "", false, false, "", nil, nil
 		}
 
@@ -420,6 +441,7 @@ func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent
 			if err := json.Unmarshal([]byte(tc.FunctionCall.Arguments), &escArgs); err != nil {
 				return nil, "", false, false, "", nil, fmt.Errorf("failed to parse escalate args: %v", err)
 			}
+			m.logger.LogToolCall(chatID, taskID, 0, "escalate", tc.FunctionCall.Arguments)
 			// Add tool response to keep context consistent
 			*messages = append(*messages, llms.MessageContent{
 				Role: llms.ChatMessageTypeTool,
@@ -431,6 +453,7 @@ func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent
 					},
 				},
 			})
+			m.logger.LogToolResult(chatID, taskID, 0, "escalate", "Escalation sent to user.")
 			return nil, "", false, true, escArgs.Question, escArgs.Options, nil
 		}
 	}

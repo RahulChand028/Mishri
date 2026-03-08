@@ -103,11 +103,12 @@ func PrintBanner() {
 
 func InitializeTerminal() {
 	// Header/Logo area: 1-9
-	// Dashboard/Status: 10
-	// Gap: 11
-	// Scrolling Logs: 12+
-	fmt.Print("\033[12;r")  // Set scrolling region from line 12 to the bottom
-	fmt.Print("\033[12;1H") // Move cursor to the start of the scrolling region
+	// Dashboard Line 1: 10 (role, health, agent, task)
+	// Dashboard Line 2: 11 (pipeline, tokens, cost)
+	// Gap: 12
+	// Scrolling Logs: 13+
+	fmt.Print("\033[13;r")  // Set scrolling region from line 13 to the bottom
+	fmt.Print("\033[13;1H") // Move cursor to the start of the scrolling region
 }
 
 func CleanupTerminal() {
@@ -125,15 +126,14 @@ func PrintLiveStatus() {
 	uptime := time.Since(startTime).Round(time.Second)
 	memMB := float64(m.Alloc) / 1024 / 1024
 
-	role, task, lastHB := GetStatus()
+	d := GetDashboard()
 
-	// Pulse Logic
+	// ---- Pulse / Health ----
 	pulseIcon := "🔴"
 	pulseText := "OFFLINE"
 	pulseColor := colorNeonMag
 
-	delta := time.Since(lastHB)
-
+	delta := time.Since(d.LastHeartbeat)
 	if delta < 40*time.Second {
 		pulseIcon = "🟢"
 		pulseText = "HEALTHY"
@@ -144,11 +144,10 @@ func PrintLiveStatus() {
 		pulseColor = colorPurple
 	}
 
-	// Role Icon
+	// ---- Role ----
 	icon := "💤"
 	roleColor := colorReset
-
-	switch role {
+	switch d.Role {
 	case RoleMaster:
 		icon = "🛰️"
 		roleColor = colorNeonCyan
@@ -157,53 +156,119 @@ func PrintLiveStatus() {
 		roleColor = colorNeonMag
 	}
 
-	// Radar Animation
+	// ---- Radar ----
 	radar := " "
-	if role != RoleIdle {
+	if d.Role != RoleIdle {
 		radar = radarFrames[radarIdx]
 		radarIdx = (radarIdx + 1) % len(radarFrames)
 	}
 
-	// Task Truncation
-	displayTask := task
+	// ---- Task ----
+	displayTask := d.Task
 	if displayTask == "" {
 		displayTask = "Waiting..."
 	}
-	if len(displayTask) > 25 {
-		displayTask = displayTask[:22] + "..."
+	if len(displayTask) > 30 {
+		displayTask = displayTask[:27] + "..."
 	}
 
-	// Memory Bar (Percent Based)
+	// ---- LINE 1: Health | Role | Agent | Task | Memory ----
 	totalMB := float64(m.Sys) / 1024 / 1024
 	memPercent := memMB / totalMB
-
-	barWidth := 20
+	barWidth := 12
 	filled := clamp(int(memPercent*float64(barWidth)), 0, barWidth)
-
-	bar := strings.Repeat("█", filled) +
-		strings.Repeat("▒", barWidth-filled)
-
-	barColor := colorNeonCyan
+	memBar := strings.Repeat("█", filled) + strings.Repeat("▒", barWidth-filled)
+	memColor := colorNeonCyan
 	if memPercent > 0.7 {
-		barColor = colorNeonMag
+		memColor = colorNeonMag
 	}
 
-	// Build the status string BEFORE locking, to minimise lock hold time.
-	statusStr := fmt.Sprintf(
-		"\033[s\033[10;1H\033[K%s[%s] %s%s %-10s%s | %s[%s%s %-6s%s] [%s] %s%s%s [%v] [%s%s %.1fMB%s]\033[u",
+	line1 := fmt.Sprintf(
+		"\033[10;1H\033[K%s[%s] %s%s %-7s%s │ %s%s %-6s%s │ %s%s%s │ %s │ %s%s%.0fMB%s",
 		colorReset,
-		lastHB.Format("15:04:05"),
+		d.LastHeartbeat.Format("15:04:05"),
 		pulseColor, pulseIcon, pulseText, colorReset,
-		colorReset,
-		roleColor, icon, role, colorReset,
-		displayTask,
+		roleColor, icon, d.Role, colorReset,
 		colorPurple, radar, colorReset,
-		uptime,
-		barColor, bar, memMB, colorReset,
+		displayTask,
+		memColor, memBar, memMB, colorReset,
 	)
 
-	// Lock, write the ENTIRE escape sequence atomically, unlock.
+	// ---- LINE 2: Pipeline | Tokens | Cost | Elapsed | Parallel ----
+	var line2 string
+	if d.TotalAgents > 0 || d.PromptTokens > 0 || d.Role != RoleIdle {
+		// Pipeline progress bar
+		pipeBar := ""
+		if d.TotalAgents > 0 {
+			pw := 15
+			done := clamp(d.CompletedAgents*pw/d.TotalAgents, 0, pw)
+			pipeBar = fmt.Sprintf(
+				"%s[%s%s%s%s] %d/%d",
+				colorNeonCyan,
+				colorNeonCyan, strings.Repeat("█", done),
+				colorReset+strings.Repeat("░", pw-done),
+				colorNeonCyan,
+				d.CompletedAgents, d.TotalAgents,
+			)
+			if d.FailedAgents > 0 {
+				pipeBar += fmt.Sprintf(" %s✗%d%s", colorNeonMag, d.FailedAgents, colorReset)
+			}
+		} else {
+			pipeBar = fmt.Sprintf("%s─%s", colorCyan, colorReset)
+		}
+
+		// Active agent
+		agentInfo := ""
+		if d.ActiveAgentID > 0 {
+			agentInfo = fmt.Sprintf(" │ %s⚙ Agent %d (%s)%s", colorNeonMag, d.ActiveAgentID, d.ActiveAgentType, colorReset)
+		}
+
+		// Parallel indicator
+		parallelInfo := ""
+		if d.ParallelCount > 1 {
+			parallelInfo = fmt.Sprintf(" │ %s⚡%d parallel%s", colorPurple, d.ParallelCount, colorReset)
+		}
+
+		// Tokens
+		totalTokens := d.PromptTokens + d.CompletionTokens
+		tokenStr := ""
+		if totalTokens > 0 {
+			if totalTokens > 1000 {
+				tokenStr = fmt.Sprintf(" │ 📊 %.1fk tok", float64(totalTokens)/1000)
+			} else {
+				tokenStr = fmt.Sprintf(" │ 📊 %d tok", totalTokens)
+			}
+		}
+
+		// Cost
+		costStr := ""
+		if d.TotalCost > 0 {
+			costStr = fmt.Sprintf(" │ 💰 $%.4f", d.TotalCost)
+		}
+
+		// Elapsed time for current task
+		elapsed := ""
+		if !d.TaskStart.IsZero() && d.Role != RoleIdle {
+			dur := time.Since(d.TaskStart).Round(time.Second)
+			elapsed = fmt.Sprintf(" │ ⏱ %v", dur)
+		}
+
+		line2 = fmt.Sprintf(
+			"\033[11;1H\033[K  %s%s%s%s%s%s │ %s%v%s",
+			pipeBar, agentInfo, parallelInfo, tokenStr, costStr, elapsed,
+			colorCyan, uptime, colorReset,
+		)
+	} else {
+		// Idle — just show uptime
+		line2 = fmt.Sprintf(
+			"\033[11;1H\033[K  %s─────── STANDBY ───────%s │ %s%v%s",
+			colorCyan, colorReset,
+			colorCyan, uptime, colorReset,
+		)
+	}
+
+	// Lock, write both lines atomically, unlock.
 	termMu.Lock()
-	fmt.Print(statusStr)
+	fmt.Print("\033[s" + line1 + line2 + "\033[u")
 	termMu.Unlock()
 }

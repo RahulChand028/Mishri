@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -14,12 +15,17 @@ import (
 	"github.com/rahul/mishri/internal/observability"
 	"github.com/rahul/mishri/internal/store"
 	"github.com/rahul/mishri/internal/tools"
+	"github.com/rahul/mishri/internal/ui"
 	"github.com/rahul/mishri/pkg/config"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
 )
 
 func main() {
+	uiFlag := flag.Bool("ui", false, "Start the Web Configuration UI")
+	uiPort := flag.Int("ui-port", 8080, "Port for the Web Configuration UI")
+	flag.Parse()
+
 	observability.PrintBanner()
 	observability.InitializeTerminal()
 
@@ -201,6 +207,16 @@ func main() {
 			stop() // stop caller if gateway dies
 		}
 	}()
+
+	// Start Web UI if flag is passed
+	if *uiFlag {
+		uiServer := ui.NewServer("config.json", brain, history, logger)
+		go func() {
+			if err := uiServer.Start(*uiPort); err != nil {
+				log.Printf("\033[91m[ FAIL ] WEB UI ERROR: %v\033[0m", err)
+			}
+		}()
+	}
 
 	// Wait for shutdown signal
 	<-ctx.Done()

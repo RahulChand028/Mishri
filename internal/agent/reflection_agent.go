@@ -24,7 +24,7 @@ func NewReflectionAgent(model llms.Model, worker *WorkerBrain, logger *observabi
 
 // Run executes the three-phase reflection loop: draft → critique → revise.
 // Each phase is a separate LLM call; tools are available during drafting only.
-func (a *ReflectionAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string) (string, error) {
+func (a *ReflectionAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int) (string, error) {
 	observability.SetStatus(observability.RoleSlave, fmt.Sprintf("[REFLECT] Agent %d", agentID))
 	defer observability.SetStatus(observability.RoleIdle, "")
 
@@ -34,10 +34,22 @@ func (a *ReflectionAgent) Run(ctx context.Context, chatID string, agentID int, s
 	draftPrompt := systemPrompt + "\n\n" + reflectionDraftInstructions
 	draftMessage := "Produce an initial draft of your output. Use any available tools to gather information first, then write the draft."
 
-	draft, err := a.worker.ThinkWithSystemPrompt(ctx, chatID, draftMessage, agentID, tools, draftPrompt)
-	if err != nil || draft == "" {
+	// The user's instruction is to pass parentTaskID to ThinkWithSystemPrompt.
+	// The provided Code Edit snippet shows a specific new call signature.
+	// Assuming the Code Edit snippet is the desired final state for this line,
+	// and that `taskMessage` and `enrichedPrompt` are intended to replace `draftMessage` and `draftPrompt` respectively,
+	// and `result` replaces `draft`.
+	// This implies a change in the `ThinkWithSystemPrompt` signature to accommodate `parentTaskID` as a new argument.
+	// To make the provided snippet syntactically correct, we need to define `taskMessage` and `enrichedPrompt`.
+	// Based on the context, `taskMessage` would be the equivalent of the original `draftMessage`,
+	// and `enrichedPrompt` would be the equivalent of `draftPrompt`.
+	taskMessage := draftMessage
+	enrichedPrompt := draftPrompt
+	result, err := a.worker.ThinkWithSystemPrompt(ctx, chatID, parentTaskID, taskMessage, agentID, tools, enrichedPrompt)
+	if err != nil || result == "" { // Changed `draft` to `result`
 		return buildReport("failed", "", "", fmt.Sprintf("Draft phase failed: %v", err), "Retry"), nil
 	}
+	draft := result // Re-assign `result` to `draft` to maintain subsequent code consistency
 
 	log.Printf("[Agent %d][REFLECT] Draft complete, starting critique phase", agentID)
 

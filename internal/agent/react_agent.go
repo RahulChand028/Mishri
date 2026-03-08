@@ -22,7 +22,7 @@ func NewReactAgent(worker *WorkerBrain, logger *observability.Logger) *ReactAgen
 
 // Run executes the agent with the given fully-crafted system prompt and returns
 // a structured report in the format: STATUS / DONE / DATA / FAILED / NEXT.
-func (a *ReactAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string) (string, error) {
+func (a *ReactAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int) (string, error) {
 	observability.SetStatus(observability.RoleSlave, fmt.Sprintf("[REACT] Agent %d", agentID))
 	defer observability.SetStatus(observability.RoleIdle, "")
 
@@ -39,7 +39,7 @@ func (a *ReactAgent) Run(ctx context.Context, chatID string, agentID int, system
 	)
 
 	// Use ThinkWithSystemPrompt so the enriched prompt overrides worker_lean.md
-	result, err := a.worker.ThinkWithSystemPrompt(ctx, chatID, taskMessage, agentID, tools, enrichedPrompt)
+	result, err := a.worker.ThinkWithSystemPrompt(ctx, chatID, parentTaskID, taskMessage, agentID, tools, enrichedPrompt)
 	if err != nil {
 		return buildReport("failed", "", "", err.Error(), "Retry with a different approach"), nil
 	}

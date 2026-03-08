@@ -28,13 +28,15 @@ const (
 // Unlike a Step (atomic one-liner), an Agent receives a full system prompt and runs
 // its own internal ReAct/Code/Reflection loop until completion.
 type Agent struct {
-	ID           int       `json:"id"`
-	Type         AgentType `json:"type"`          // "react" | "code" | "reflection"
-	Goal         string    `json:"goal"`          // Short description of this agent's objective
-	SystemPrompt string    `json:"system_prompt"` // Full prompt crafted by the Manager
-	Tools        []string  `json:"tools"`         // Allowed tools for this agent
-	Status       string    `json:"status"`        // pending | running | completed | failed
-	Report       string    `json:"report"`        // Structured report returned by the agent
+	ID            int       `json:"id"`
+	Type          AgentType `json:"type"`           // "react" | "code" | "reflection" | "manager"
+	Goal          string    `json:"goal"`           // Short description of this agent's objective
+	SystemPrompt  string    `json:"system_prompt"`  // Full prompt crafted by the Manager
+	Tools         []string  `json:"tools"`          // Allowed tools for this agent
+	Status        string    `json:"status"`         // pending | running | completed | failed
+	Report        string    `json:"report"`         // Structured report returned by the agent
+	ParallelGroup int       `json:"parallel_group"` // 0 = sequential (default), N = run with same-group agents
+	MaxIterations int       `json:"max_iterations"` // 0 = default (5), N = max ReAct loop iterations
 }
 
 // AgentPlan represents a pipeline of autonomous agents spawned for a task.
@@ -55,5 +57,7 @@ type EscalationState struct {
 	PendingAgents   string `json:"pending_agents"`   // JSON of agents not yet run
 	Question        string `json:"question"`         // What to ask the user
 	Options         string `json:"options"`          // JSON array of optional choices
-	Status          string `json:"status"`           // "pending" | "answered" | "expired"
+	ParentAgentID   int    `json:"parent_agent_id"` // ID of the manager agent in the parent plan
+	ParentTaskID    string `json:"parent_task_id"`  // Task ID of the parent plan
+	Status          string `json:"status"`          // "pending" | "answered" | "expired"
 }

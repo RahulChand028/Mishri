@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mishri | Live Agent Graph</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: #0b0e14;
+            color: #d1d5db;
+            overflow: hidden;
+            background-image: radial-gradient(at 0% 0%, rgba(0, 255, 65, 0.03) 0%, transparent 50%), radial-gradient(at 100% 100%, rgba(59, 130, 246, 0.03) 0%, transparent 50%);
+        }
+
+        .node circle {
+            cursor: pointer;
+            stroke: rgba(255, 255, 255, 0.4);
+            stroke-width: 2px;
+            transition: all 0.3s;
+            fill: #161b22;
+        }
+
+        .node text {
+            font-size: 10px;
+            fill: #e5e7eb;
+            pointer-events: none;
+            font-weight: 500;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        .link {
+            fill: none;
+            stroke: rgba(255, 255, 255, 0.15);
+            stroke-width: 1.5px;
+            transition: stroke 0.3s;
+        }
+
+        .agent-active {
+            stroke: #3b82f6 !important;
+            animation: glow-pulse 2s infinite ease-in-out;
+        }
+
+        .agent-completed,
+        .agent-success {
+            stroke: #10b981 !important;
+            filter: drop-shadow(0 0 8px rgba(16, 185, 129, 0.4));
+        }
+
+        .agent-failed {
+            stroke: #ef4444 !important;
+            filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.4));
+        }
+
+        .agent-pending {
+            stroke: #4b5563 !important;
+            stroke-dasharray: 4;
+        }
+
+        .agent-escalated {
+            stroke: #a855f7 !important;
+            filter: drop-shadow(0 0 8px rgba(168, 85, 247, 0.4));
+        }
+
+        .detail-panel {
+            background: rgba(22, 27, 34, 0.7);
+            backdrop-filter: blur(20px);
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: -10px 0 30px rgba(0, 0, 0, 0.4);
+            height: 100vh;
+        }
+
+        .node-circle {
+            stroke-width: 2px;
+            filter: drop-shadow(0 0 8px rgba(0, 255, 65, 0.15));
+            transition: all 0.3s ease;
+        }
+
+        .node-circle:hover {
+            filter: drop-shadow(0 0 12px rgba(0, 255, 65, 0.4));
+            stroke-width: 3px;
+        }
+
+        .event-card {
+            background: rgba(13, 17, 23, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+            transition: border-color 0.2s;
+        }
+
+        .event-card:hover {
+            border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .glass-btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(4px);
+            border-radius: 6px;
+            padding: 0.375rem 0.75rem;
+            color: #9ca3af;
+            font-size: 0.75rem;
+            transition: all 0.2s;
+        }
+
+        .glass-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.2);
+            color: #e5e7eb;
+        }
+
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+
+        pre {
+            font-family: 'Fira Code', monospace;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                opacity: 1;
+            }
+
+            50% {
+                transform: scale(1.1);
+                opacity: 0.7;
+            }
+
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        @keyframes glow-pulse {
+            0% {
+                filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.4));
+                stroke-width: 3px;
+            }
+
+            50% {
+                filter: drop-shadow(0 0 20px rgba(59, 130, 246, 0.8));
+                stroke-width: 4px;
+            }
+
+            100% {
+                filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.4));
+                stroke-width: 3px;
+            }
+        }
+
+        .pulse {
+            animation: pulse 2s infinite ease-in-out;
+        }
+    </style>
+</head>
+
+<body x-data="flowApp()" class="bg-[#0b0e14] h-screen w-screen overflow-hidden">
+    <div class="h-full w-full flex flex-col relative">
+        <!-- Header Overlay -->
+        <div class="absolute top-6 left-6 z-10 flex flex-col gap-2">
+            <h1 class="text-xl font-bold text-neon flex items-center gap-2 drop-shadow-lg">
+                <span class="p-1 px-2 border border-neon/30 bg-neon/5 rounded">🛰️ Flow</span>
+                Mishri <span class="text-gray-500 font-light">Live Graph</span>
+            </h1>
+            <div class="flex items-center gap-3">
+                <a href="/" class="glass-btn">⚙ Config</a>
+                <a href="/chat" class="glass-btn">💬 Chat</a>
+                <button @click="resetGraph" class="glass-btn">⟲ Reset</button>
+            </div>
+        </div>
+
+        <div class="absolute top-6 right-6 z-10">
+            <div class="flex items-center gap-3 px-3 py-1.5 bg-black/40 backdrop-blur-md border border-white/5 rounded-full text-[10px] text-gray-400">
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span> Manager
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]"></span> Worker
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span> Active
+                </div>
+            </div>
+        </div>
+
+        <div class="flex-1 relative bg-[#0b0e14]" id="graph-container">
+            <svg id="graph-svg" class="w-full h-full block"></svg>
+            
+            <!-- Connection Status -->
+            <div class="absolute bottom-6 right-6 z-10">
+                <div class="flex items-center gap-2 px-3 py-1 bg-black/50 border border-white/10 rounded-full backdrop-blur-sm text-[10px]">
+                    <span class="w-2 h-2 rounded-full" :class="connected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-red-500'"></span>
+                    <span class="text-gray-400" x-text="connected ? 'Live' : 'Disconnected'"></span>
+                    <span class="w-px h-3 bg-white/10 mx-1"></span>
+                    <span class="text-gray-400" x-text="nodes.length + ' nodes'"></span>
+                </div>
+            </div>
+
+            <!-- Loading State -->
+            <div x-show="nodes.length === 0"
+                class="absolute inset-0 flex flex-col items-center justify-center text-gray-600 pointer-events-none">
+                <div class="text-4xl mb-4 opacity-70">🛰️</div>
+                <p class="text-sm font-medium text-gray-400">Waiting for agent activity...</p>
+                <p class="text-xs opacity-50 mt-1">Events will appear here in real-time.</p>
+            </div>
+        </div>
+
+        <aside class="fixed top-0 right-0 h-full w-96 detail-panel z-20 flex flex-col transform transition-transform duration-300"
+                :class="selectedNode ? 'translate-x-0' : 'translate-x-full'">
+                <template x-if="selectedNode">
+                    <div class="flex flex-col h-full">
+                        <!-- Panel Header -->
+                        <div class="p-6 border-b border-white/5 bg-white/5">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-[10px] font-bold tracking-widest text-blue-400 uppercase"
+                                    x-text="selectedNode.type"></span>
+                                <button @click="selectedNode = null"
+                                    class="text-gray-500 hover:text-white transition text-xl leading-none">&times;</button>
+                            </div>
+                            <h2 class="text-xl font-bold text-white"
+                                x-text="selectedNode.type === 'root' ? 'MasterBrain' : 'Agent ' + selectedNode.agent_id">
+                            </h2>
+                            <div class="mt-3 flex items-center gap-2">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold"
+                                    :class="selectedNode.status === 'active' ? 'bg-amber-500/20 text-amber-500 border border-amber-500/30' : 'bg-green-500/20 text-green-500 border border-green-500/30'"
+                                    x-text="selectedNode.status"></span>
+                            </div>
+                        </div>
+
+                        <!-- Panel Events -->
+                        <div class="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-3">
+                            <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4 px-2">
+                                Execution Log</h3>
+
+                            <template x-for="ev in getNodeEvents(selectedNode.id)">
+                                <div class="event-card">
+                                    <div class="flex justify-between text-[9px] font-bold text-gray-500 uppercase mb-2">
+                                        <span x-text="ev.type"></span>
+                                        <span x-text="formatTime(ev.timestamp)"></span>
+                                    </div>
+
+                                    <template x-if="ev.type === 'reasoning'">
+                                        <div class="text-gray-400 italic whitespace-pre-wrap" x-text="ev.data.content"></div>
+                                    </template>
+
+                                    <template x-if="ev.type === 'tool_call'">
+                                        <div class="space-y-1">
+                                            <div class="text-blue-400 font-medium flex items-center gap-1">
+                                                <span class="opacity-50">🛠️</span> <code x-text="ev.data.tool"></code>
+                                            </div>
+                                            <template x-if="ev.data.args">
+                                                <pre class="text-[9px] bg-black/30 p-1.5 rounded text-gray-500 overflow-x-auto" x-text="ev.data.args.length > 500 ? ev.data.args.substring(0, 500) + '...' : ev.data.args"></pre>
+                                            </template>
+                                        </div>
+                                    </template>
+
+                                    <template x-if="ev.type === 'tool_result'">
+                                        <div class="space-y-1">
+                                            <div class="text-green-400/80 font-medium flex items-center gap-1">
+                                                <span class="opacity-50">✅</span> Result
+                                            </div>
+                                            <pre class="text-[9px] bg-black/30 p-1.5 rounded text-gray-400 overflow-x-auto" x-text="ev.data.result.length > 1000 ? ev.data.result.substring(0, 1000) + '...' : ev.data.result"></pre>
+                                        </div>
+                                    </template>
+
+                                    <template x-if="ev.type === 'agent_end'">
+                                        <div
+                                            :class="ev.data.status === 'success' || ev.data.status === 'completed' ? 'text-green-500' : 'text-red-500'">
+                                            Finished with status: <span class="font-bold"
+                                                x-text="ev.data.status"></span>
+                                        </div>
+                                    </template>
+
+                                    <template x-if="ev.type === 'cost'">
+                                        <div class="text-yellow-500/80">
+                                            Cost: <span x-text="ev.data.total_tokens"></span> tokens on <span
+                                                x-text="ev.data.model"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+            </aside>
+        </div>
+    </div>
+
+    <script>
+        function flowApp() {
+            return {
+                events: [],
+                connected: false,
+                ws: null,
+                nodes: [], // {id, type, agent_id, agent_type, goal, status, parentId}
+                links: [],
+                selectedNode: null,
+                lastEvent: null,
+
+                svg: null,
+                g: null,
+                simulation: null,
+                zoom: null,
+
+                init() {
+                    console.log("[Flow] Initializing graph...");
+                    window.flowApp = this; // Expose for console debugging
+                    this.initD3();
+                    this.connect();
+                    window.addEventListener('resize', () => {
+                        this.updateDimensions();
+                    });
+                    console.log("[Flow] Subscribed to events.");
+                },
+
+                initD3() {
+                    this.svg = d3.select("#graph-svg");
+                    this.g = this.svg.append("g");
+
+                    this.zoom = d3.zoom()
+                        .scaleExtent([0.1, 4])
+                        .on("zoom", (event) => {
+                            this.g.attr("transform", event.transform);
+                        });
+
+                    this.svg.call(this.zoom);
+
+                    this.simulation = d3.forceSimulation()
+                        .force("link", d3.forceLink().id(d => d.id).distance(100))
+                        .force("charge", d3.forceManyBody().strength(-300))
+                        .force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2))
+                        .on("tick", () => this.ticked());
+                },
+
+                updateDimensions() {
+                    this.simulation.force("center", d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2));
+                    this.simulation.alpha(0.3).restart();
+                },
+
+                connect() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/events`);
+
+                    this.ws.onopen = () => {
+                        this.connected = true;
+                    };
+
+                    this.ws.onmessage = (msg) => {
+                        try {
+                            const event = JSON.parse(msg.data);
+                            this.processEvent(event);
+                        } catch (e) {
+                            console.error('Failed to process event:', e);
+                        }
+                    };
+
+                    this.ws.onclose = () => {
+                        this.connected = false;
+                        setTimeout(() => this.connect(), 3000);
+                    };
+                },
+
+                processEvent(ev) {
+                    this.lastEvent = ev;
+                    this.events.push(ev);
+                    if (this.events.length > 500) this.events.shift();
+
+                    if (ev.type === 'plan' || ev.type === 'agent_start') {
+                        this.handleAgentActivity(ev);
+                    } else if (ev.type === 'agent_end') {
+                        this.updateAgentStatus(ev);
+                    } else if (ev.type === 'llm' || ev.type === 'reasoning' || ev.type === 'tool_call') {
+                        this.markAgentActive(ev);
+                    }
+
+                    this.updateGraph();
+                },
+
+                handleAgentActivity(ev) {
+                    const chatID = ev.chat_id;
+                    const parentID = ev.parent_chat_id;
+
+                    // Ensure root exists
+                    const rootChatID = parentID || chatID;
+                    if (!this.nodes.find(n => n.id === rootChatID)) {
+                        this.nodes.push({ id: rootChatID, type: 'root', status: 'active', label: 'MasterBrain' });
+                    }
+
+                    if (ev.type === 'agent_start') {
+                        const agentID = ev.data.agent_id;
+                        const taskID = ev.task_id || 'default';
+                        const nodeID = `${chatID}::${taskID}::${agentID}`;
+
+                        if (!this.nodes.find(n => n.id === nodeID)) {
+                            // Link to parent using parent_task_id or task_id or chat_id
+                            let parentNodeID = ev.chat_id;
+                            if (ev.parent_chat_id) {
+                                const pTaskID = ev.parent_task_id || ev.task_id || 'default';
+                                parentNodeID = `${ev.parent_chat_id}::${pTaskID}::${ev.parent_agent_id}`;
+                                
+                                // Fallback: if parent node with that exact task_id doesn't exist, connect to root
+                                if (!this.nodes.find(n => n.id === parentNodeID)) {
+                                    parentNodeID = ev.parent_chat_id;
+                                }
+                            }
+
+                            this.nodes.push({
+                                id: nodeID,
+                                chat_id: chatID,
+                                type: 'agent',
+                                agent_id: agentID,
+                                agent_type: ev.data.agent_type,
+                                goal: ev.data.goal,
+                                status: 'active',
+                                parentId: parentNodeID
+                            });
+
+                            if (!this.links.find(l => l.source === parentNodeID && l.target === nodeID)) {
+                                this.links.push({ source: parentNodeID, target: nodeID });
+                            }
+                        }
+                    } else if (ev.type === 'plan') {
+                        // Pre-populate agents from plan if they don't exist
+                        const taskID = ev.task_id || 'default';
+                        ev.data.agents.forEach(a => {
+                            const nodeID = `${chatID}::${taskID}::${a.id}`;
+                            if (!this.nodes.find(n => n.id === nodeID)) {
+                                let parentNodeID = ev.chat_id;
+                                if (ev.parent_chat_id) {
+                                    const pTaskID = ev.parent_task_id || ev.task_id || 'default';
+                                    parentNodeID = `${ev.parent_chat_id}::${pTaskID}::${ev.parent_agent_id}`;
+                                    if (!this.nodes.find(n => n.id === parentNodeID)) {
+                                        parentNodeID = ev.parent_chat_id;
+                                    }
+                                }
+                                this.nodes.push({
+                                    id: nodeID,
+                                    chat_id: chatID,
+                                    type: 'agent',
+                                    agent_id: a.id,
+                                    agent_type: a.type,
+                                    goal: a.goal,
+                                    status: 'pending',
+                                    parentId: parentNodeID
+                                });
+
+                                if (!this.links.find(l => l.source === parentNodeID && l.target === nodeID)) {
+                                    this.links.push({ source: parentNodeID, target: nodeID });
+                                }
+                            }
+                        });
+                    }
+                },
+
+                updateAgentStatus(ev) {
+                    const taskID = ev.task_id || 'default';
+                    const nodeID = `${ev.chat_id}::${taskID}::${ev.data.agent_id}`;
+                    const node = this.nodes.find(n => n.id === nodeID);
+                    if (node) {
+                        node.status = ev.data.status;
+                    }
+                },
+
+                markAgentActive(ev) {
+                    // Chat ID might be sub_...
+                    const chatID = ev.chat_id;
+                    const data = ev.data;
+                    let agentID = data ? data.agent_id : null;
+
+                    const taskID = ev.task_id || 'default';
+                    if (agentID !== null) {
+                        const nodeID = `${chatID}::${taskID}::${agentID}`;
+                        const node = this.nodes.find(n => n.id === nodeID);
+                        if (node && node.status !== 'completed') {
+                            node.status = 'active';
+                        }
+                    } else {
+                        // Might be root
+                        const node = this.nodes.find(n => n.id === chatID);
+                        if (node) node.status = 'active';
+                    }
+                },
+
+                updateGraph() {
+                    const nodeData = [...this.nodes];
+                    const linkData = this.links.map(l => ({ ...l }));
+
+                    const link = this.g.selectAll(".link")
+                        .data(linkData, d => `${d.source.id || d.source}-${d.target.id || d.target}`)
+                        .join("path")
+                        .attr("class", "link");
+
+                    const node = this.g.selectAll(".node")
+                        .data(nodeData, d => d.id)
+                        .join("g")
+                        .attr("class", "node")
+                        .on("click", (e, d) => { this.selectedNode = d; })
+                        .call(d3.drag()
+                            .on("start", (e, d) => this.dragstarted(e, d))
+                            .on("drag", (e, d) => this.dragged(e, d))
+                            .on("end", (e, d) => this.dragended(e, d)));
+
+                    node.selectAll("circle")
+                        .data(d => [d])
+                        .join("circle")
+                        .attr("r", d => d.type === 'root' ? 12 : 8)
+                        .attr("class", d => `node-circle agent-${d.status}`);
+
+                    node.selectAll("text")
+                        .data(d => [d])
+                        .join("text")
+                        .attr("dx", 15)
+                        .attr("dy", 4)
+                        .text(d => d.type === 'root' ? 'Master' : `${d.agent_type} (A${d.agent_id})`);
+
+                    this.simulation.nodes(nodeData);
+                    this.simulation.force("link").links(linkData);
+                    this.simulation.alpha(0.3).restart();
+                },
+
+                ticked() {
+                    this.g.selectAll(".link")
+                        .attr("d", d => {
+                            const sx = d.source.x, sy = d.source.y;
+                            const tx = d.target.x, ty = d.target.y;
+                            return `M${sx},${sy}L${tx},${ty}`;
+                        });
+
+                    this.g.selectAll(".node")
+                        .attr("transform", d => `translate(${d.x},${d.y})`);
+                },
+
+                dragstarted(event, d) {
+                    if (!event.active) this.simulation.alphaTarget(0.3).restart();
+                    d.fx = d.x;
+                    d.fy = d.y;
+                },
+
+                dragged(event, d) {
+                    d.fx = event.x;
+                    d.fy = event.y;
+                },
+
+                dragended(event, d) {
+                    if (!event.active) this.simulation.alphaTarget(0);
+                    d.fx = null;
+                    d.fy = null;
+                },
+
+                resetGraph() {
+                    this.nodes = [];
+                    this.links = [];
+                    this.events = [];
+                    this.selectedNode = null;
+                    this.updateGraph();
+                },
+
+                getNodeEvents(id) {
+                    return this.events.filter(ev => {
+                        if (id.includes('::')) {
+                            const parts = id.split('::');
+                            if (parts.length === 3) {
+                                // chat::task::agent
+                                // Match if chat_id AND agent_id match, AND (task_ids match OR event task_id is empty/default)
+                                return ev.chat_id === parts[0] && 
+                                       (ev.data && ev.data.agent_id == parts[2]) &&
+                                       (ev.task_id === parts[1] || !ev.task_id || ev.task_id === 'default');
+                            }
+                            // Fallback for legacy IDs
+                            return ev.chat_id === parts[0] && (ev.data && ev.data.agent_id == parts[1]);
+                        }
+                        return ev.chat_id === id && (!ev.data || ev.data.agent_id === undefined);
+                    }).reverse().slice(0, 50);
+                },
+
+                getStatusColor(status) {
+                    const colors = {
+                        'active': 'bg-blue-500',
+                        'success': 'bg-green-500',
+                        'completed': 'bg-green-500',
+                        'failed': 'bg-red-500',
+                        'pending': 'bg-gray-500',
+                        'escalated': 'bg-purple-500'
+                    };
+                    return colors[status] || 'bg-gray-700';
+                },
+
+                formatTime(ts) {
+                    if (!ts) return '';
+                    return new Date(ts).toLocaleTimeString();
+                }
+            }
+        }
+    </script>
+</body>
+
+</html>
