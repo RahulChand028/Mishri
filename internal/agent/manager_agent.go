@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/rahul/mishri/internal/observability"
 	"github.com/rahul/mishri/internal/store"
@@ -51,7 +52,7 @@ func NewManagerAgent(model llms.Model, worker *WorkerBrain, history HistoryStore
 }
 
 // Run implements AgentRunner. This is the entry point when MasterBrain dispatches a manager agent.
-func (m *ManagerAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int) (string, error) {
+func (m *ManagerAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int, maxIterations int) (string, error) {
 	subChatID := fmt.Sprintf("sub_%s_%d", chatID, agentID)
 	goal := systemPrompt // The manager is given the goal as the system prompt by the planner
 
@@ -59,7 +60,7 @@ func (m *ManagerAgent) Run(ctx context.Context, chatID string, agentID int, syst
 	observability.SetStatus(observability.RoleMaster, fmt.Sprintf("[TEAM] Agent %d: %s", agentID, truncate(goal, 60)))
 	defer observability.SetStatus(observability.RoleIdle, "")
 
-	return m.execute(ctx, chatID, subChatID, 0, goal, nil, nil, chatID, parentTaskID, agentID)
+	return m.execute(ctx, chatID, subChatID, 0, goal, nil, nil, chatID, parentTaskID, agentID, maxIterations)
 }
 
 // Resume continues a Sub-Manager's execution after an escalation was answered.
@@ -88,13 +89,13 @@ func (m *ManagerAgent) Resume(ctx context.Context, esc *store.EscalationState, a
 
 	history, _ := m.history.GetHistory(esc.SubChatID, 100)
 
-	return m.execute(ctx, esc.ParentChatID, esc.SubChatID, esc.PlanID, esc.Goal, priorReports, history, esc.ParentChatID, esc.ParentTaskID, esc.ParentAgentID)
+	return m.execute(ctx, esc.ParentChatID, esc.SubChatID, esc.PlanID, esc.Goal, priorReports, history, esc.ParentChatID, esc.ParentTaskID, esc.ParentAgentID, 0)
 }
 
 // execute is the core orchestration loop for the Sub-Manager.
 // It creates its own team plan, dispatches workers, and handles escalation.
 // If existingPlanID > 0, it reuses the plan; otherwise creates a new one.
-func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, existingPlanID int64, goal string, priorReports []string, history []llms.MessageContent, realParentChatID, realParentTaskID string, realParentAgentID int) (string, error) {
+func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, existingPlanID int64, goal string, priorReports []string, history []llms.MessageContent, realParentChatID, realParentTaskID string, realParentAgentID int, managerMaxIter int) (string, error) {
 	// Initialize scratchpad for this sub-team
 	scratchPath := fmt.Sprintf("logs/scratchpad_%s.md", subChatID)
 	if len(priorReports) == 0 && len(history) == 0 { // Check if it's a fresh run
@@ -150,7 +151,10 @@ func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, ex
 	if priorReports == nil {
 		priorReports = []string{}
 	}
-	maxIterations := 15
+	maxIterations := managerMaxIter
+	if maxIterations <= 0 {
+		maxIterations = 15
+	}
 
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		select {
@@ -187,16 +191,17 @@ func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, ex
 		// Persist plan state
 		_ = m.history.SyncPlanAgents(planID, agentPlan.Agents)
 
-		// Find next pending agent
-		var nextAgent *store.Agent
+		// Find next group of agents to run (supporting parallel execution)
+		var agentsToRun []*store.Agent
+		firstAgentIdx := -1
 		for i := range agentPlan.Agents {
 			if agentPlan.Agents[i].Status == "pending" || agentPlan.Agents[i].Status == "" {
-				nextAgent = &agentPlan.Agents[i]
+				firstAgentIdx = i
 				break
 			}
 		}
 
-		if nextAgent == nil {
+		if firstAgentIdx == -1 {
 			// All agents done — ask sub-manager for final synthesis
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
@@ -205,73 +210,101 @@ func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, ex
 			continue
 		}
 
-		log.Printf("[%s][Sub-Agent %d/%d] Type=%s Goal=%s", subChatID, nextAgent.ID, len(agentPlan.Agents), nextAgent.Type, nextAgent.Goal)
-		observability.SetStatus(observability.RoleSlave, fmt.Sprintf("[TEAM] Worker %d (%s): %s", nextAgent.ID, nextAgent.Type, truncate(nextAgent.Goal, 50)))
-
-		// Inject prior reports into system prompt
-		workerPrompt := nextAgent.SystemPrompt
-		if len(priorReports) > 0 {
-			priorContext := "\n\n## Prior Reports:\n" + strings.Join(priorReports, "\n---\n")
-			if !strings.Contains(workerPrompt, "Prior Reports") {
-				workerPrompt += priorContext
+		// Group agents with same non-zero parallel_group
+		targetGroup := agentPlan.Agents[firstAgentIdx].ParallelGroup
+		if targetGroup != 0 {
+			for i := range agentPlan.Agents {
+				if (agentPlan.Agents[i].Status == "pending" || agentPlan.Agents[i].Status == "") && agentPlan.Agents[i].ParallelGroup == targetGroup {
+					agentsToRun = append(agentsToRun, &agentPlan.Agents[i])
+				}
 			}
+		} else {
+			agentsToRun = append(agentsToRun, &agentPlan.Agents[firstAgentIdx])
 		}
 
-		// Block manager type in sub-plans (enforce 2-level limit)
-		if nextAgent.Type == store.AgentTypeManager {
-			nextAgent.Status = "failed"
-			nextAgent.Report = "Error: Cannot create nested managers. Maximum depth is 2 levels."
+		// Dispatch agents (in parallel if more than one)
+		var wg sync.WaitGroup
+		results := make(chan struct {
+			idx    int
+			report string
+			err    error
+		}, len(agentsToRun))
+
+		for i, agent := range agentsToRun {
+			wg.Add(1)
+			go func(idx int, a *store.Agent) {
+				defer wg.Done()
+
+				iterLimit := a.MaxIterations
+				if iterLimit <= 0 {
+					iterLimit = 6 // Increase worker default slightly for sub-teams
+				}
+
+				// Log start using the Manager's subChatID and its TaskID
+				m.logger.LogAgentStart(subChatID, taskID, realParentChatID, realParentTaskID, realParentAgentID, a.ID, string(a.Type), a.Goal)
+
+				workerPrompt := a.SystemPrompt
+				if len(priorReports) > 0 {
+					priorContext := "\n\n## Prior Reports:\n" + strings.Join(priorReports, "\n---\n")
+					if !strings.Contains(workerPrompt, "Prior Reports") {
+						workerPrompt += priorContext
+					}
+				}
+
+				var report string
+				var err error
+				if m.dispatcher != nil {
+					// CRITICAL FIX: Pass subChatID and taskID as parent context so the UI can connect them
+					report, err = m.dispatcher.Dispatch(ctx, string(a.Type), subChatID, a.ID, workerPrompt, a.Tools, m.logger, subChatID, taskID, realParentAgentID, iterLimit)
+				} else {
+					report, err = m.worker.ThinkWithSystemPromptMaxIter(ctx, subChatID, taskID, workerPrompt, a.ID, a.Tools, workerPrompt, iterLimit)
+				}
+				results <- struct {
+					idx    int
+					report string
+					err    error
+				}{idx, report, err}
+			}(i, agent)
+		}
+
+		wg.Wait()
+		close(results)
+
+		// Process results
+		for res := range results {
+			agent := agentsToRun[res.idx]
+			if res.err != nil {
+				agent.Status = "failed"
+				agent.Report = fmt.Sprintf("Error: %v", res.err)
+			} else {
+				agent.Status = "completed"
+				agent.Report = res.report
+				priorReports = append(priorReports, fmt.Sprintf("Agent %d (%s):\n%s", agent.ID, agent.Type, res.report))
+
+				// Persist to scratchpad
+				scratchEntry := fmt.Sprintf("\n\n## Worker %d (%s) Report\n%s\n", agent.ID, agent.Type, res.report)
+				if f, ferr := os.OpenFile(scratchPath, os.O_APPEND|os.O_WRONLY, 0644); ferr == nil {
+					_, _ = f.WriteString(scratchEntry)
+					f.Close()
+				}
+			}
+			m.logger.LogAgentEnd(subChatID, taskID, agent.ID, agent.Status, agent.Report)
 			_ = m.history.SyncPlanAgents(planID, agentPlan.Agents)
+
+			// Feed result back briefly
+			brief := agent.Report
+			if len(brief) > 2000 {
+				brief = brief[:2000] + "... [truncated]"
+			}
+			orchContext = append(orchContext, llms.MessageContent{
+				Role:  llms.ChatMessageTypeAI,
+				Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Worker %d completed.", agent.ID))},
+			})
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart("Agent " + fmt.Sprintf("%d", nextAgent.ID) + " failed: cannot nest managers. Use react/code/reflection instead.")},
+				Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Worker %d (%s) report [%s]:\n%s\n\nRemaining Goal: %s\n\nIf more workers are needed, call `propose_plan`. If sufficient, provide final response.", agent.ID, agent.Type, agent.Status, brief, goal))},
 			})
-			continue
 		}
-
-		// Dispatch worker
-		m.logger.LogAgentStart(subChatID, taskID, realParentChatID, realParentTaskID, realParentAgentID, nextAgent.ID, string(nextAgent.Type), nextAgent.Goal)
-		var report string
-		var err error
-		if m.dispatcher != nil {
-			report, err = m.dispatcher.Dispatch(ctx, string(nextAgent.Type), subChatID, nextAgent.ID, workerPrompt, nextAgent.Tools, m.logger, realParentChatID, realParentTaskID, realParentAgentID)
-		} else {
-			report, err = m.worker.ThinkWithSystemPrompt(ctx, subChatID, taskID, workerPrompt, nextAgent.ID, nextAgent.Tools, workerPrompt)
-		}
-
-		if err != nil {
-			nextAgent.Status = "failed"
-			nextAgent.Report = fmt.Sprintf("Error: %v", err)
-		} else {
-			nextAgent.Status = "completed"
-			nextAgent.Report = report
-			priorReports = append(priorReports, fmt.Sprintf("Agent %d (%s):\n%s", nextAgent.ID, nextAgent.Type, report))
-
-			// Persist to scratchpad
-			scratchEntry := fmt.Sprintf("\n\n## Worker %d (%s) Report\n%s\n", nextAgent.ID, nextAgent.Type, report)
-			if f, ferr := os.OpenFile(scratchPath, os.O_APPEND|os.O_WRONLY, 0644); ferr == nil {
-				_, _ = f.WriteString(scratchEntry)
-				f.Close()
-			}
-		}
-
-		_ = m.history.SyncPlanAgents(planID, agentPlan.Agents)
-		m.logger.LogAgentEnd(subChatID, taskID, nextAgent.ID, nextAgent.Status, nextAgent.Report)
-		log.Printf("[%s][Sub-Agent %d] Status=%s", subChatID, nextAgent.ID, nextAgent.Status)
-
-		// Feed result back to sub-manager
-		brief := nextAgent.Report
-		if len(brief) > 2000 {
-			brief = brief[:2000] + "... [truncated]"
-		}
-		orchContext = append(orchContext, llms.MessageContent{
-			Role:  llms.ChatMessageTypeAI,
-			Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Worker %d completed.", nextAgent.ID))},
-		})
-		orchContext = append(orchContext, llms.MessageContent{
-			Role:  llms.ChatMessageTypeHuman,
-			Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Worker %d (%s) report [%s]:\n%s\n\nUpdate the plan, escalate if needed, or give the final answer.", nextAgent.ID, nextAgent.Type, nextAgent.Status, brief))},
-		})
 	}
 
 	os.Remove(scratchPath)
@@ -339,14 +372,16 @@ func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent
 							"items": map[string]any{
 								"type": "object",
 								"properties": map[string]any{
-									"id":            map[string]any{"type": "integer"},
-									"type":          map[string]any{"type": "string", "enum": []string{"react", "code", "reflection"}},
-									"goal":          map[string]any{"type": "string"},
-									"system_prompt": map[string]any{"type": "string"},
-									"tools":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-									"status":        map[string]any{"type": "string", "enum": []string{"pending", "completed", "failed"}},
+									"id":             map[string]any{"type": "integer"},
+									"type":           map[string]any{"type": "string", "enum": []string{"react", "code", "reflection"}},
+									"goal":           map[string]any{"type": "string"},
+									"system_prompt":  map[string]any{"type": "string"},
+									"tools":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+									"status":         map[string]any{"type": "string", "enum": []string{"pending", "completed", "failed"}},
+									"parallel_group": map[string]any{"type": "integer", "description": "Set to same non-zero integer to run agents in parallel."},
+									"max_iterations": map[string]any{"type": "integer", "description": "Max ReAct steps. 8-10 for deep research, default 5-6."},
 								},
-								"required": []string{"id", "type", "goal", "system_prompt", "tools", "status"},
+								"required": []string{"id", "type", "goal", "system_prompt"},
 							},
 						},
 					},

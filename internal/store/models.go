@@ -57,7 +57,7 @@ type EscalationState struct {
 	PendingAgents   string `json:"pending_agents"`   // JSON of agents not yet run
 	Question        string `json:"question"`         // What to ask the user
 	Options         string `json:"options"`          // JSON array of optional choices
-	ParentAgentID   int    `json:"parent_agent_id"` // ID of the manager agent in the parent plan
-	ParentTaskID    string `json:"parent_task_id"`  // Task ID of the parent plan
-	Status          string `json:"status"`          // "pending" | "answered" | "expired"
+	ParentAgentID   int    `json:"parent_agent_id"`  // ID of the manager agent in the parent plan
+	ParentTaskID    string `json:"parent_task_id"`   // Task ID of the parent plan
+	Status          string `json:"status"`           // "pending" | "answered" | "expired"
 }

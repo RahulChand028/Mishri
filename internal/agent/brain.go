@@ -184,7 +184,7 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID, taskID string, input st
 		}
 
 		// Log LLM interaction
-		b.Logger.LogLLM(chatID, taskID, messages, resp.Choices[0].Content, resp.Choices[0].ToolCalls)
+		b.Logger.LogLLM(chatID, taskID, stepID, messages, resp.Choices[0].Content, resp.Choices[0].ToolCalls)
 
 		// Track token costs
 		if resp.Choices[0].GenerationInfo != nil {
@@ -192,7 +192,7 @@ func (b *WorkerBrain) Think(ctx context.Context, chatID, taskID string, input st
 				pTokens, _ := usage["PromptTokens"].(int)
 				cTokens, _ := usage["CompletionTokens"].(int)
 				_ = b.History.RecordCost(chatID, "default", pTokens, cTokens)
-				b.Logger.LogCost(chatID, taskID, pTokens, cTokens, "default")
+				b.Logger.LogCost(chatID, taskID, stepID, pTokens, cTokens, "default")
 				observability.AddTokens(pTokens, cTokens, "default")
 			}
 		}
@@ -404,23 +404,46 @@ func (b *WorkerBrain) executeWithRetry(ctx context.Context, tool tools.Tool, arg
 func trimOrchContext(msgs []llms.MessageContent, maxRecent int) []llms.MessageContent {
 	// We want to keep:
 	// 1. System Prompt (index 0)
-	// 2. Original User Request (index 1 - usually the first human message)
+	// 2. Original User Request (the first human message)
 	// 3. Last N messages (maxRecent)
 
 	if len(msgs) <= 2+maxRecent {
 		return msgs
 	}
 
-	trimmed := make([]llms.MessageContent, 2)
-	trimmed[0] = msgs[0] // System
-	trimmed[1] = msgs[1] // User Request
+	trimmed := make([]llms.MessageContent, 0, 2+maxRecent)
+	trimmed = append(trimmed, msgs[0]) // Keep System Prompt
 
-	// Append last maxRecent messages
+	// Find the first human message (the original goal)
+	var foundGoal bool
+	for _, m := range msgs {
+		if m.Role == llms.ChatMessageTypeHuman {
+			trimmed = append(trimmed, m)
+			foundGoal = true
+			break
+		}
+	}
+
+	// If no human message found (unlikely), just keep the second message
+	if !foundGoal && len(msgs) > 1 {
+		trimmed = append(trimmed, msgs[1])
+	}
+
+	// Append last maxRecent messages, avoiding overlap with the goal message
 	start := len(msgs) - maxRecent
 	if start < 2 {
 		start = 2
 	}
-	trimmed = append(trimmed, msgs[start:]...)
+	// Check if the last maxRecent messages already include the goal we just added
+	for i := start; i < len(msgs); i++ {
+		// Simple check: if this is the same physical message as trimmed[1], skip it
+		// In langchaingo, we don't have unique IDs easily, so we just append and let the LLM handle it
+		// but we can at least ensure we don't duplicate if start is index 1.
+		if i == 1 && foundGoal {
+			continue
+		}
+		trimmed = append(trimmed, msgs[i])
+	}
 	return trimmed
 }
 
@@ -613,7 +636,7 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 			// All agents done — push manager to give the final answer.
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart("All agents have completed. Synthesize their reports and give the user a final answer as plain text.")},
+				Parts: []llms.ContentPart{llms.TextPart("All agents have completed. Synthesize their reports and provide the final response to the user. Maintain your persona as Mishri. Do NOT mention internal agent IDs or reports.")},
 			})
 			continue
 		}
@@ -643,7 +666,7 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 				dispatchPrompt = nextAgent.Goal
 			}
 			if b.Dispatcher != nil {
-				report, err = b.Dispatcher.Dispatch(ctx, string(nextAgent.Type), chatID, nextAgent.ID, dispatchPrompt, nextAgent.Tools, b.Logger, chatID, taskID, 0)
+				report, err = b.Dispatcher.Dispatch(ctx, string(nextAgent.Type), chatID, nextAgent.ID, dispatchPrompt, nextAgent.Tools, b.Logger, chatID, taskID, 0, nextAgent.MaxIterations)
 			} else {
 				// Fallback if no dispatcher
 				b.Worker.MaxIter = nextAgent.MaxIterations
@@ -686,13 +709,18 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 			if len(brief) > 2000 {
 				brief = brief[:2000] + "... [truncated]"
 			}
+			feedbackPrompt := fmt.Sprintf("Step %d [%s] results:\n%s\n\nAll prior results are in the scratchpad and context. Review the user's original goal and decide if further steps are needed. If yes, call `propose_plan` with the remaining actions. If the goal is fully achieved, provide the final answer as Mishri. IMPORTANT: Do NOT mention agents, steps, or internal processes in your final answer.", nextAgent.ID, nextAgent.Status, brief)
+			if nextAgent.Type == store.AgentTypeManager && nextAgent.Status == "completed" {
+				feedbackPrompt = fmt.Sprintf("The Manager agent has completed its complex sub-task. Report:\n%s\n\nAssess if the overall goal is now complete. If more work remains (e.g., coding after research), propose the next agent now. Otherwise, provide the final response.", brief)
+			}
+
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeAI,
-				Parts: []llms.ContentPart{llms.TextPart("Research step completed.")},
+				Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("%s agent step completed.", nextAgent.Type))},
 			})
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Step %d [%s]:\n%s\n\nUpdate the plan or give the final answer. IMPORTANT: Do NOT mention agents, steps, or internal processes in your final answer — respond naturally as Mishri.", nextAgent.ID, nextAgent.Status, brief))},
+				Parts: []llms.ContentPart{llms.TextPart(feedbackPrompt)},
 			})
 		} else {
 			// ---- Parallel execution: run all same-group agents simultaneously ----
@@ -722,7 +750,7 @@ func (b *MasterBrain) Think(ctx context.Context, chatID string, input string) (s
 					var r string
 					var e error
 					if b.Dispatcher != nil {
-						r, e = b.Dispatcher.Dispatch(ctx, string(agent.Type), chatID, agent.ID, sp, agent.Tools, b.Logger, chatID, taskID, 0)
+						r, e = b.Dispatcher.Dispatch(ctx, string(agent.Type), chatID, agent.ID, sp, agent.Tools, b.Logger, chatID, taskID, 0, agent.MaxIterations)
 					} else {
 						r, e = b.Worker.ThinkWithSystemPromptMaxIter(ctx, chatID, taskID, sp, agent.ID, agent.Tools, sp, agent.MaxIterations)
 					}
@@ -844,7 +872,7 @@ func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent,
 	}
 
 	// Log LLM interaction
-	b.Logger.LogLLM(chatID, "planning", *messages, resp.Choices[0].Content, resp.Choices[0].ToolCalls)
+	b.Logger.LogLLM(chatID, "planning", 0, *messages, resp.Choices[0].Content, resp.Choices[0].ToolCalls)
 
 	// Track token costs
 	if resp.Choices[0].GenerationInfo != nil {
@@ -852,7 +880,7 @@ func (b *MasterBrain) plan(ctx context.Context, messages *[]llms.MessageContent,
 			pTokens, _ := usage["PromptTokens"].(int)
 			cTokens, _ := usage["CompletionTokens"].(int)
 			_ = b.History.RecordCost(chatID, "default", pTokens, cTokens)
-			b.Logger.LogCost(chatID, "", pTokens, cTokens, "default")
+			b.Logger.LogCost(chatID, "", 0, pTokens, cTokens, "default")
 			observability.AddTokens(pTokens, cTokens, "default")
 		}
 	}

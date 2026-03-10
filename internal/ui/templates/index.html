@@ -4,30 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mishri Dashboard - Config</title>
+    <title>Mishri | Home</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        neon: '#00ff41',
-                        cdark: '#0b0e14',
-                        cgray: '#161b22',
-                        cborder: '#30363d',
-                        premium: {
-                            glow: 'rgba(0, 255, 65, 0.15)',
-                            glass: 'rgba(22, 27, 34, 0.7)',
-                            border: 'rgba(255, 255, 255, 0.1)'
-                        }
-                    },
-                    backgroundImage: {
-                        'mesh': 'radial-gradient(at 0% 0%, rgba(0, 255, 65, 0.05) 0%, transparent 50%), radial-gradient(at 100% 100%, rgba(59, 130, 246, 0.05) 0%, transparent 50%)',
-                    }
-                }
-            }
-        }
-    </script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <style>
         :root {
@@ -44,11 +22,12 @@
             color: #e2e8f0;
             margin: 0;
             min-height: 100vh;
+            overflow-x: hidden;
         }
 
         .cyber-grid {
-            background-image: 
-                radial-gradient(at 0% 0%, rgba(0, 255, 65, 0.05) 0%, transparent 50%), 
+            background-image:
+                radial-gradient(at 0% 0%, rgba(0, 255, 65, 0.05) 0%, transparent 50%),
                 radial-gradient(at 100% 100%, rgba(59, 130, 246, 0.05) 0%, transparent 50%);
         }
 
@@ -84,6 +63,180 @@
             letter-spacing: -0.02em;
         }
 
+        .hero-title {
+            font-size: 4rem;
+            font-weight: 800;
+            line-height: 1;
+            background: linear-gradient(135deg, #fff 0%, #a1a1a1 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 1.5rem;
+        }
+
+        .premium-card {
+            background: rgba(22, 27, 34, 0.5);
+            border: 1px solid var(--cborder);
+            border-radius: 16px;
+            padding: 2rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .premium-card:hover {
+            transform: translateY(-8px);
+            background: rgba(22, 27, 34, 0.8);
+            border-color: var(--neon);
+            box-shadow: 0 10px 40px -10px rgba(0, 255, 65, 0.2);
+        }
+
+        .premium-card svg {
+            color: var(--neon);
+            width: 3rem;
+            height: 3rem;
+            margin-bottom: 1.5rem;
+            transition: transform 0.3s;
+        }
+
+        .premium-card:hover svg {
+            transform: scale(1.1) rotate(-5deg);
+        }
+
+        .btn-premium {
+            background: linear-gradient(135deg, #00ff41 0%, #00cc33 100%);
+            color: #0d1117;
+            font-weight: 700;
+            padding: 0.75rem 1.5rem;
+            border-radius: 12px;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            text-decoration: none;
+            box-shadow: 0 4px 15px rgba(0, 255, 65, 0.2);
+        }
+
+        .btn-premium:hover {
+            transform: scale(1.02);
+            box-shadow: 0 6px 20px rgba(0, 255, 65, 0.3);
+            filter: brightness(1.1);
+        }
+
+        /* --- Scrollbar --- */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--cdark);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--neon);
+        }
+
+        /* --- Mascot Animations --- */
+        .mascot-container {
+            position: relative;
+            width: 280px;
+            height: 280px;
+            margin: 0 auto 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            perspective: 1000px;
+        }
+
+        .mishri-mascot {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            filter: drop-shadow(0 0 25px rgba(0, 255, 65, 0.35));
+            animation: float-3d 8s ease-in-out infinite, breathe-glow 4s ease-in-out infinite;
+            z-index: 2;
+        }
+
+        .mascot-backdrop {
+            position: absolute;
+            width: 130%;
+            height: 130%;
+            background: radial-gradient(circle, rgba(0, 255, 65, 0.08) 0%, transparent 70%);
+            border-radius: 50%;
+            z-index: 1;
+            animation: backdrop-pulse 10s ease-in-out infinite;
+        }
+
+        .mascot-shadow {
+            position: absolute;
+            bottom: -15px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 140px;
+            height: 10px;
+            background: rgba(0, 255, 65, 0.12);
+            filter: blur(8px);
+            border-radius: 50%;
+            animation: shadow-scale 8s ease-in-out infinite;
+        }
+
+        @keyframes float-3d {
+
+            0%,
+            100% {
+                transform: translateY(0) rotateY(-5deg) rotateX(5deg);
+            }
+
+            50% {
+                transform: translateY(-25px) rotateY(10deg) rotateX(-5deg);
+            }
+        }
+
+        @keyframes backdrop-pulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+                opacity: 0.3;
+            }
+
+            50% {
+                transform: scale(1.1);
+                opacity: 0.5;
+            }
+        }
+
+        @keyframes breathe-glow {
+
+            0%,
+            100% {
+                filter: drop-shadow(0 0 25px rgba(0, 255, 65, 0.35)) brightness(1);
+            }
+
+            50% {
+                filter: drop-shadow(0 0 45px rgba(0, 255, 65, 0.55)) brightness(1.2);
+            }
+        }
+
+        @keyframes shadow-scale {
+
+            0%,
+            100% {
+                transform: translateX(-50%) scale(1);
+                opacity: 0.15;
+            }
+
+            50% {
+                transform: translateX(-50%) scale(0.7);
+                opacity: 0.08;
+            }
+        }
+
         .nav-links {
             display: flex;
             align-items: center;
@@ -112,474 +265,108 @@
             background: rgba(0, 255, 65, 0.1);
             border-color: rgba(0, 255, 65, 0.3);
         }
-
-        .cyber-card {
-            background: rgba(22, 27, 34, 0.4);
-            border: 1px solid var(--cborder);
-            border-radius: 12px;
-            padding: 1.5rem;
-            backdrop-filter: blur(8px);
-            transition: border-color 0.2s;
-        }
-
-        .cyber-card:hover {
-            border-color: rgba(0, 255, 65, 0.3);
-        }
-
-        .cyber-input {
-            width: 100%;
-            background: rgba(13, 17, 23, 0.8);
-            border: 1px solid var(--cborder);
-            border-radius: 8px;
-            padding: 0.625rem 0.875rem;
-            color: white;
-            outline: none;
-            transition: all 0.2s;
-        }
-
-        .cyber-input:focus {
-            border-color: var(--neon);
-            box-shadow: 0 0 0 2px rgba(0, 255, 65, 0.15);
-        }
-
-        .btn-premium {
-            background: linear-gradient(135deg, #00ff41 0%, #00cc33 100%);
-            color: #0d1117;
-            font-weight: 700;
-            padding: 0.5rem 1.25rem;
-            border-radius: 8px;
-            border: none;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.875rem;
-        }
-
-        .btn-premium:hover:not(:disabled) {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(0, 255, 65, 0.3);
-        }
-
-        .cyber-label {
-            display: block;
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: #8b949e;
-            margin-bottom: 0.375rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
-        /* --- Components --- */
-        .cyber-modal-overlay {
-            background: rgba(0, 0, 0, 0.8);
-            backdrop-filter: blur(8px);
-            z-index: 1000;
-        }
-
-        .cyber-modal {
-            background: #0d1117;
-            border: 1px solid var(--cborder);
-            box-shadow: 0 0 30px rgba(0, 0, 0, 0.5), 0 0 1px var(--neon);
-            max-width: 400px;
-            width: 90%;
-            border-radius: 12px;
-            overflow: hidden;
-        }
-
-        .cyber-toast {
-            position: fixed;
-            bottom: 2rem;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1100;
-            padding: 0.75rem 1.5rem;
-            border-radius: 99px;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            font-size: 0.875rem;
-            font-weight: 600;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-            border: 1px solid transparent;
-            backdrop-filter: blur(12px);
-        }
-
-        .toast-success {
-            background: rgba(5, 46, 22, 0.9);
-            border-color: #22c55e;
-            color: #86efac;
-        }
-
-        .toast-error {
-            background: rgba(69, 10, 10, 0.9);
-            border-color: #ef4444;
-            color: #fca5a5;
-        }
     </style>
 </head>
 
-<body class="cyber-grid" x-data="configForm()">
-
-    <!-- Unified Navigation -->
+<body class="cyber-grid min-h-screen">
     <nav class="unified-nav">
         <a href="/" class="nav-logo">
             <span class="nav-logo-icon">⬡</span>
             <span class="nav-logo-text text-xl">Mishri</span>
         </a>
         <div class="nav-links">
-            <a href="/" class="nav-link active flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066-1.543.94-3.31.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                <span>Config</span>
+            <a href="/" class="nav-link active" title="Lading Page Home">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6">
+                    </path>
+                </svg>
             </a>
-            <a href="/chat" class="nav-link flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.855-1.246L3 20l1.13-3.135C2.106 15.176 1 13.195 1 11c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
-                <span>Chat</span>
+            <a href="/config" class="nav-link" title="Configuration Settings">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066-1.543.94-3.31.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                    </path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
             </a>
-            <a href="/flow" class="nav-link flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
-                <span>Flow</span>
+            <a href="/chat" class="nav-link" title="Live Agent Chat">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.855-1.246L3 20l1.13-3.135C2.106 15.176 1 13.195 1 11c0-4.418 4.03-8 9-8s9 3.582 9 8z">
+                    </path>
+                </svg>
             </a>
-            <div class="h-4 w-px bg-gray-700 mx-2"></div>
-            <button @click="save" :disabled="saving" class="btn-premium">
-                <span x-show="!saving">⚡ Save Config</span>
-                <span x-show="saving">Saving...</span>
-            </button>
+            <a href="/flow" class="nav-link" title="Real-time Execution Flow">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
+                    </path>
+                </svg>
+            </a>
         </div>
     </nav>
 
-    <div class="max-w-4xl mx-auto py-8 px-4">
-
-        <!-- Custom Toast -->
-        <template x-teleport="body">
-            <div x-show="notification.show" 
-                 x-transition:enter="transition ease-out duration-300"
-                 x-transition:enter-start="opacity-0 translate-y-4" 
-                 x-transition:enter-end="opacity-100 translate-y-0"
-                 x-transition:leave="transition ease-in duration-200" 
-                 x-transition:leave-end="opacity-0 translate-y-4"
-                 :class="notification.type === 'success' ? 'toast-success' : 'toast-error'"
-                 class="cyber-toast">
-                <span x-show="notification.type === 'success'">✅</span>
-                <span x-show="notification.type === 'error'">❌</span>
-                <span x-text="notification.message"></span>
+    <main class="max-w-6xl mx-auto px-6 pt-16 pb-32">
+        <div class="text-center mb-24">
+            <!-- <div class="mascot-container">
+                <div class="mascot-backdrop"></div>
+                <img src="/assets/mishri_mascot.png" alt="Mishri Mascot" class="mishri-mascot">
+                <div class="mascot-shadow"></div>
+            </div> -->
+            <h1 class="hero-title">Experience Agentic<br>Collective Intelligence.</h1>
+            <p class="text-xl text-gray-400 max-w-2xl mx-auto mb-10">
+                Mishri is a premium multi-agent orchestration platform. Build, configure, and observe complex AI teams
+                with absolute transparency.
+            </p>
+            <div class="flex justify-center gap-4">
+                <a href="/chat" class="btn-premium">⚡ Launch Agent Chat</a>
+                <a href="/config" class="nav-link bg-white/5 py-3 px-6">Configure System</a>
             </div>
-        </template>
+        </div>
 
-        <!-- Cyber Modal -->
-        <template x-teleport="body">
-            <div x-show="modal.show" 
-                 class="fixed inset-0 cyber-modal-overlay flex items-center justify-center p-4"
-                 x-transition:enter="transition ease-out duration-200"
-                 x-transition:enter-start="opacity-0"
-                 x-transition:enter-end="opacity-100"
-                 x-transition:leave="transition ease-in duration-150"
-                 x-transition:leave-end="opacity-0"
-                 style="display:none;">
-                <div class="cyber-modal p-6 space-y-4" @click.away="modal.show = false">
-                    <div class="flex items-center gap-3 text-red-400">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                        <h3 class="font-bold text-lg" x-text="modal.title"></h3>
-                    </div>
-                    <p class="text-sm text-gray-400" x-text="modal.message"></p>
-                    <div class="flex justify-end gap-3 mt-6">
-                        <button @click="modal.show = false" class="nav-link">Cancel</button>
-                        <button @click="modal.onConfirm()" class="px-4 py-2 bg-red-600/20 text-red-500 border border-red-500/50 rounded-lg text-sm font-bold hover:bg-red-600/40 transition">
-                            Confirm Action
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </template>
+        <div class="grid md:grid-cols-3 gap-8">
+            <a href="/chat" class="premium-card group no-underline">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.855-1.246L3 20l1.13-3.135C2.106 15.176 1 13.195 1 11c0-4.418 4.03-8 9-8s9 3.582 9 8z">
+                    </path>
+                </svg>
+                <h3 class="text-xl font-bold mb-3 text-white">Live Operations</h3>
+                <p class="text-gray-400">Engage with MasterBrain and witness multi-agent collaboration in real-time.
+                    Full history tracking and memory persistence.</p>
+            </a>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <a href="/flow" class="premium-card group no-underline text-left">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
+                    </path>
+                </svg>
+                <h3 class="text-xl font-bold mb-3 text-white">Graph Observability</h3>
+                <p class="text-gray-400">Deep-dive into execution traces. Monitor LLM reasoning, strategic planning, and
+                    agent goals through dynamic nodes.</p>
+            </a>
 
-            <!-- Core Application -->
-            <div class="cyber-card">
-                <h2
-                    style="font-size:1.125rem; font-weight:700; color:white; display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem;">
-                    <svg style="width:1.25rem;height:1.25rem;color:#00ff41;" fill="none" stroke="currentColor"
-                        viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01">
-                        </path>
-                    </svg>
-                    Core Application
-                </h2>
-                <div style="display:flex; flex-direction:column; gap:1rem;">
-                    <div>
-                        <label class="cyber-label">Agent Name</label>
-                        <input type="text" x-model="config.app.name" class="cyber-input" placeholder="e.g. HAL-9000">
-                    </div>
-                    <div>
-                        <label class="cyber-label">Workspace Path</label>
-                        <input type="text" x-model="config.app.workspace" class="cyber-input"
-                            placeholder="/path/to/workspace">
-                        <p style="font-size:0.75rem; color:#6b7280; margin-top:0.25rem;">Directory where the agent can
-                            read/write files.</p>
-                    </div>
-                    <div>
-                        <label class="cyber-label">Skills Directory</label>
-                        <input type="text" x-model="config.app.skills_dir" class="cyber-input" placeholder="./skills">
-                    </div>
-                </div>
-            </div>
+            <a href="/config" class="premium-card group no-underline text-left">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066-1.543.94-3.31.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                    </path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                </svg>
+                <h3 class="text-xl font-bold mb-3 text-white">System Control</h3>
+                <p class="text-gray-400">Manage LLM providers (OpenAI, Anthropic, DeepSeek) and communication gateways.
+                    Fine-tune the engine's core intelligence.</p>
+            </a>
+        </div>
+    </main>
 
-            <!-- Persistence -->
-            <div class="cyber-card">
-                <h2
-                    style="font-size:1.125rem; font-weight:700; color:white; display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem;">
-                    <svg style="width:1.25rem;height:1.25rem;color:#00ff41;" fill="none" stroke="currentColor"
-                        viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4">
-                        </path>
-                    </svg>
-                    Persistence (Memory)
-                </h2>
-                <div style="display:flex; flex-direction:column; gap:1rem;">
-                    <div>
-                        <label class="cyber-label">Database Type</label>
-                        <select x-model="config.memory.type" class="cyber-input">
-                            <option value="sqlite">SQLite</option>
-                            <option value="postgres">PostgreSQL</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="cyber-label">Database Path / DSN</label>
-                        <input type="text" x-model="config.memory.path" class="cyber-input" placeholder="mishri.db">
-                    </div>
-                </div>
-            </div>
-
-            <!-- LLM Providers — full width -->
-            <div class="cyber-card" style="grid-column: 1 / -1;">
-                <h2
-                    style="font-size:1.125rem; font-weight:700; color:white; display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem;">
-                    <svg style="width:1.25rem;height:1.25rem;color:#00ff41;" fill="none" stroke="currentColor"
-                        viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z">
-                        </path>
-                    </svg>
-                    LLM Providers
-                </h2>
-                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem;">
-
-                    <!-- OpenAI -->
-                    <div style="padding:1rem; position:relative;">
-                        <div
-                            style="position:absolute; top:1rem; right:1rem; display:flex; align-items:center; gap:0.375rem;">
-                            <input type="checkbox" x-model="config.providers.openai.enabled"
-                                style="width:1rem;height:1rem;accent-color:#00ff41;">
-                            <span style="font-size:0.75rem; color:#9ca3af;">Enabled</span>
-                        </div>
-                        <h3 style="font-weight:700; font-size:1rem; margin-bottom:0.75rem;">OpenAI</h3>
-                        <div style="display:flex; flex-direction:column; gap:0.75rem;">
-                            <div><label class="cyber-label">Model</label><input type="text"
-                                    x-model="config.providers.openai.model" class="cyber-input" placeholder="gpt-4o">
-                            </div>
-                            <div><label class="cyber-label">API Key</label><input type="password"
-                                    x-model="config.providers.openai.api_key" class="cyber-input" placeholder="sk-...">
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Anthropic -->
-                    <div style="padding:1rem; position:relative;">
-                        <div
-                            style="position:absolute; top:1rem; right:1rem; display:flex; align-items:center; gap:0.375rem;">
-                            <input type="checkbox" x-model="anthropicEnabled" @change="toggleAnthropic"
-                                style="width:1rem;height:1rem;accent-color:#a855f7;">
-                            <span style="font-size:0.75rem; color:#9ca3af;">Enabled</span>
-                        </div>
-                        <h3 style="font-weight:700; font-size:1rem; margin-bottom:0.75rem;">Anthropic</h3>
-                        <div x-show="config.providers.anthropic"
-                            style="display:flex; flex-direction:column; gap:0.75rem;">
-                            <div><label class="cyber-label">Model</label><input type="text"
-                                    x-model="config.providers.anthropic && config.providers.anthropic.model"
-                                    class="cyber-input" placeholder="claude-3-5-sonnet-20240620"></div>
-                            <div><label class="cyber-label">API Key</label><input type="password"
-                                    x-model="config.providers.anthropic && config.providers.anthropic.api_key"
-                                    class="cyber-input" placeholder="sk-ant-..."></div>
-                        </div>
-                        <p x-show="!config.providers.anthropic"
-                            style="font-size:0.75rem; color:#6b7280; margin-top:0.5rem;">Enable to configure Anthropic.
-                        </p>
-                    </div>
-
-                </div>
-            </div>
-
-            <!-- Gateways — full width -->
-            <div class="cyber-card" style="grid-column: 1 / -1;">
-                <h2
-                    style="font-size:1.125rem; font-weight:700; color:white; display:flex; align-items:center; gap:0.5rem; margin-bottom:1rem;">
-                    <svg style="width:1.25rem;height:1.25rem;color:#00ff41;" fill="none" stroke="currentColor"
-                        viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z">
-                        </path>
-                    </svg>
-                    Communication Gateways
-                </h2>
-                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem;">
-
-                    <!-- Telegram -->
-                    <div style="padding:1rem; position:relative;">
-                        <div
-                            style="position:absolute; top:1rem; right:1rem; display:flex; align-items:center; gap:0.375rem;">
-                            <input type="checkbox" x-model="telegramEnabled" @change="toggleGateway('telegram')"
-                                style="width:1rem;height:1rem;accent-color:#3b82f6;">
-                            <span style="font-size:0.75rem; color:#9ca3af;">Enabled</span>
-                        </div>
-                        <h3 style="font-weight:700; font-size:1rem; margin-bottom:0.75rem;">✈️ Telegram Bot</h3>
-                        <div x-show="config.gateways.telegram">
-                            <label class="cyber-label">Bot Token</label>
-                            <input type="password" x-model="config.gateways.telegram && config.gateways.telegram.token"
-                                class="cyber-input" placeholder="123456:ABC-DEF...">
-                        </div>
-                        <p x-show="!config.gateways.telegram"
-                            style="font-size:0.75rem; color:#6b7280; margin-top:0.5rem;">Enable to configure Telegram.
-                        </p>
-                    </div>
-
-                    <!-- Discord -->
-                    <div style="padding:1rem; position:relative;">
-                        <div
-                            style="position:absolute; top:1rem; right:1rem; display:flex; align-items:center; gap:0.375rem;">
-                            <input type="checkbox" x-model="discordEnabled" @change="toggleGateway('discord')"
-                                style="width:1rem;height:1rem;accent-color:#818cf8;">
-                            <span style="font-size:0.75rem; color:#9ca3af;">Enabled</span>
-                        </div>
-                        <h3 style="font-weight:700; font-size:1rem; margin-bottom:0.75rem;">🎮 Discord Bot</h3>
-                        <div x-show="config.gateways.discord">
-                            <label class="cyber-label">Bot Token</label>
-                            <input type="password" x-model="config.gateways.discord && config.gateways.discord.token"
-                                class="cyber-input" placeholder="MTIzNDU2Nzg5...">
-                        </div>
-                        <p x-show="!config.gateways.discord"
-                            style="font-size:0.75rem; color:#6b7280; margin-top:0.5rem;">Enable to configure Discord.
-                        </p>
-                    </div>
-
-                </div>
-            </div>
-
-            <!-- Danger Zone -->
-            <div
-                class="col-span-1 md:col-span-2 mt-4 bg-red-950/20 border-2 border-red-500/20 rounded-xl p-6 backdrop-blur-sm">
-                <h2 class="text-lg font-bold text-red-400 flex items-center gap-2 mb-2">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z">
-                        </path>
-                    </svg>
-                    Danger Zone
-                </h2>
-                <p class="text-sm text-red-300/60 mb-6">Permanently delete all agent conversation history, plans, and
-                    cost logs. This action cannot be undone.</p>
-                <button @click="clearHistory"
-                    class="px-6 py-2.5 bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-500/40 rounded-lg text-sm font-bold transition">
-                    🗑 Clear All Agent History
-                </button>
-            </div>
-
-        </div><!-- /grid -->
-    </div><!-- /container -->
-
-    <script>
-        // Config injected from Go server at page load time
-        const serverConfig = JSON.parse('{{.| json}}') || null;
-
-        function configForm() {
-            const cfg = serverConfig || {
-                app: { name: 'Mishri', workspace: './workspace', skills_dir: './skills' },
-                memory: { type: 'sqlite', path: 'mishri.db' },
-                providers: { openai: { enabled: true, model: 'gpt-4o', api_key: '' } },
-                gateways: {}
-            };
-
-            return {
-                config: cfg,
-                saving: false,
-                notification: { show: false, message: '', type: 'success' },
-                modal: { show: false, title: '', message: '', onConfirm: () => {} },
-
-                // Derived booleans for gateway/provider toggles
-                get anthropicEnabled() { return !!(this.config.providers.anthropic && this.config.providers.anthropic.enabled); },
-                set anthropicEnabled(v) { /* handled by toggleAnthropic */ },
-                get telegramEnabled() { return !!(this.config.gateways.telegram && this.config.gateways.telegram.enabled); },
-                set telegramEnabled(v) { /* handled by toggleGateway */ },
-                get discordEnabled() { return !!(this.config.gateways.discord && this.config.gateways.discord.enabled); },
-                set discordEnabled(v) { /* handled by toggleGateway */ },
-
-                toggleAnthropic(evt) {
-                    if (evt.target.checked) {
-                        if (!this.config.providers.anthropic) {
-                            this.config.providers.anthropic = { enabled: true, model: 'claude-3-5-sonnet-20240620', api_key: '' };
-                        } else {
-                            this.config.providers.anthropic.enabled = true;
-                        }
-                    } else if (this.config.providers.anthropic) {
-                        this.config.providers.anthropic.enabled = false;
-                    }
-                },
-
-                toggleGateway(key, evt) {
-                    const checked = document.querySelector(`[\\@change="toggleGateway('${key}')"]`);
-                    if (!this.config.gateways) this.config.gateways = {};
-                    if (!this.config.gateways[key]) {
-                        this.config.gateways[key] = { enabled: true, token: '' };
-                    } else {
-                        this.config.gateways[key].enabled = !this.config.gateways[key].enabled;
-                    }
-                },
-
-                async save() {
-                    this.saving = true;
-                    try {
-                        const res = await fetch('/api/config', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(this.config)
-                        });
-                        if (!res.ok) throw new Error(await res.text());
-                        this.flash('Configuration saved successfully! ✅', 'success');
-                    } catch (e) {
-                        this.flash(e.message, 'error');
-                    } finally {
-                        this.saving = false;
-                    }
-                },
-
-                flash(msg, type) {
-                    this.notification = { show: true, message: msg, type };
-                    setTimeout(() => this.notification.show = false, 4000);
-                },
-
-                async clearHistory() {
-                    this.modal = {
-                        show: true,
-                        title: 'Clear Agent History',
-                        message: 'This will permanently delete ALL agent conversation history, plans, and cost logs. This action cannot be undone.',
-                        onConfirm: async () => {
-                            this.modal.show = false;
-                            try {
-                                const res = await fetch('/api/history', { method: 'DELETE' });
-                                if (!res.ok) throw new Error(await res.text());
-                                this.flash('All history cleared successfully! 🗑', 'success');
-                            } catch (e) {
-                                this.flash('Failed to clear history: ' + e.message, 'error');
-                            }
-                        }
-                    };
-                }
-            };
-        }
-    </script>
+    <footer class="text-center py-10 text-gray-600 text-sm border-t border-white/5 max-w-6xl mx-auto px-6">
+        &copy; 2026 Mishri Collective. All components optimized for premium agentic flow.
+    </footer>
 </body>
 
 </html>

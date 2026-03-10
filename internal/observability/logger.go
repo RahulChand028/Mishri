@@ -31,6 +31,7 @@ type Event struct {
 	Type          EventType `json:"type"`
 	ChatID        string    `json:"chat_id,omitempty"`
 	TaskID        string    `json:"task_id,omitempty"`
+	AgentID       int       `json:"agent_id,omitempty"`
 	ParentChatID  string    `json:"parent_chat_id,omitempty"`
 	ParentAgentID int       `json:"parent_agent_id,omitempty"`
 	ParentTaskID  string    `json:"parent_task_id,omitempty"`
@@ -174,9 +175,10 @@ func (l *Logger) rotateLogs() {
 
 func (l *Logger) LogReasoning(chatID, taskID string, agentID int, content string) {
 	l.Log(Event{
-		Type:   EventTypeReasoning,
-		ChatID: chatID,
-		TaskID: taskID,
+		Type:    EventTypeReasoning,
+		ChatID:  chatID,
+		TaskID:  taskID,
+		AgentID: agentID,
 		Data: map[string]any{
 			"agent_id": agentID,
 			"content":  content,
@@ -186,9 +188,10 @@ func (l *Logger) LogReasoning(chatID, taskID string, agentID int, content string
 
 func (l *Logger) LogToolCall(chatID, taskID string, agentID int, tool, args string) {
 	l.Log(Event{
-		Type:   EventTypeToolCall,
-		ChatID: chatID,
-		TaskID: taskID,
+		Type:    EventTypeToolCall,
+		ChatID:  chatID,
+		TaskID:  taskID,
+		AgentID: agentID,
 		Data: map[string]any{
 			"agent_id": agentID,
 			"tool":     tool,
@@ -199,9 +202,10 @@ func (l *Logger) LogToolCall(chatID, taskID string, agentID int, tool, args stri
 
 func (l *Logger) LogToolResult(chatID, taskID string, agentID int, tool string, result string) {
 	l.Log(Event{
-		Type:   EventTypeToolResult,
-		ChatID: chatID,
-		TaskID: taskID,
+		Type:    EventTypeToolResult,
+		ChatID:  chatID,
+		TaskID:  taskID,
+		AgentID: agentID,
 		Data: map[string]any{
 			"agent_id": agentID,
 			"tool":     tool,
@@ -210,12 +214,14 @@ func (l *Logger) LogToolResult(chatID, taskID string, agentID int, tool string, 
 	})
 }
 
-func (l *Logger) LogCost(chatID, taskID string, promptTokens, completionTokens int, model string) {
+func (l *Logger) LogCost(chatID, taskID string, agentID int, promptTokens, completionTokens int, model string) {
 	l.Log(Event{
-		Type:   EventTypeCost,
-		ChatID: chatID,
-		TaskID: taskID,
+		Type:    EventTypeCost,
+		ChatID:  chatID,
+		TaskID:  taskID,
+		AgentID: agentID,
 		Data: map[string]any{
+			"agent_id":          agentID,
 			"prompt_tokens":     promptTokens,
 			"completion_tokens": completionTokens,
 			"total_tokens":      promptTokens + completionTokens,
@@ -231,12 +237,14 @@ func (l *Logger) LogHeartbeat() {
 	})
 }
 
-func (l *Logger) LogLLM(chatID, taskID string, prompt any, response string, toolCalls any) {
+func (l *Logger) LogLLM(chatID, taskID string, agentID int, prompt any, response string, toolCalls any) {
 	l.Log(Event{
-		Type:   EventTypeLLM,
-		ChatID: chatID,
-		TaskID: taskID,
+		Type:    EventTypeLLM,
+		ChatID:  chatID,
+		TaskID:  taskID,
+		AgentID: agentID,
 		Data: map[string]any{
+			"agent_id":   agentID,
 			"prompt":     prompt,
 			"response":   response,
 			"tool_calls": toolCalls,
@@ -249,6 +257,7 @@ func (l *Logger) LogAgentStart(chatID, taskID, parentChatID, parentTaskID string
 		Type:          EventTypeAgentStart,
 		ChatID:        chatID,
 		TaskID:        taskID,
+		AgentID:       agentID,
 		ParentChatID:  parentChatID,
 		ParentTaskID:  parentTaskID,
 		ParentAgentID: parentAgentID,
@@ -262,9 +271,10 @@ func (l *Logger) LogAgentStart(chatID, taskID, parentChatID, parentTaskID string
 
 func (l *Logger) LogAgentEnd(chatID, taskID string, agentID int, status string, report string) {
 	l.Log(Event{
-		Type:   EventTypeAgentEnd,
-		ChatID: chatID,
-		TaskID: taskID,
+		Type:    EventTypeAgentEnd,
+		ChatID:  chatID,
+		TaskID:  taskID,
+		AgentID: agentID,
 		Data: map[string]any{
 			"agent_id": agentID,
 			"status":   status,

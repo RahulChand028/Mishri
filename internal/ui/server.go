@@ -16,7 +16,7 @@ import (
 	"github.com/rahul/mishri/pkg/config"
 )
 
-//go:embed templates/index.html templates/chat.html templates/flow.html
+//go:embed templates/index.html templates/config.html templates/chat.html templates/flow.html assets
 var uiFS embed.FS
 
 // Brain is the minimal interface the UI server needs from MasterBrain.
@@ -49,7 +49,8 @@ func NewServer(configPath string, brain Brain, history HistoryClearer, logger *o
 func (s *Server) Start(port int) error {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/", s.handleHome)
+	mux.HandleFunc("/config", s.handleConfig)
 	mux.HandleFunc("/chat", s.handleChat)
 	mux.HandleFunc("/flow", s.handleFlow)
 	mux.HandleFunc("/ws/chat", s.handleChatWS)
@@ -57,15 +58,36 @@ func (s *Server) Start(port int) error {
 	mux.HandleFunc("/api/config", s.handleSaveConfig)
 	mux.HandleFunc("/api/history", s.handleClearHistory)
 
+	// Static Assets
+	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir("internal/ui/assets"))))
+
 	addr := fmt.Sprintf(":%d", port)
 	log.Printf("🌐 Web UI → http://localhost%s  |  Chat → http://localhost%s/chat  |  Flow → http://localhost%s/flow", addr, addr, addr)
 	return http.ListenAndServe(addr, mux)
 }
 
+// ─── Home UI ─────────────────────────────────────────────────────────────────
+
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	tmpl, err := template.ParseFS(uiFS, "templates/index.html")
+	if err != nil {
+		log.Printf("Home template error: %v", err)
+		http.Error(w, "Failed to load home template", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	tmpl.Execute(w, nil)
+}
+
 // ─── Config UI ───────────────────────────────────────────────────────────────
 
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/config" {
 		http.NotFound(w, r)
 		return
 	}
@@ -82,7 +104,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	tmpl, err := template.New("index.html").Funcs(funcMap).ParseFS(uiFS, "templates/index.html")
+	tmpl, err := template.New("config.html").Funcs(funcMap).ParseFS(uiFS, "templates/config.html")
 	if err != nil {
 		log.Printf("Template Parse Error: %v", err)
 		http.Error(w, "Failed to load template", http.StatusInternalServerError)

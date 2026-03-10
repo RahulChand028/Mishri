@@ -24,7 +24,7 @@ func NewReflectionAgent(model llms.Model, worker *WorkerBrain, logger *observabi
 
 // Run executes the three-phase reflection loop: draft → critique → revise.
 // Each phase is a separate LLM call; tools are available during drafting only.
-func (a *ReflectionAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int) (string, error) {
+func (a *ReflectionAgent) Run(ctx context.Context, chatID string, agentID int, systemPrompt string, tools []string, parentChatID, parentTaskID string, parentAgentID int, maxIterations int) (string, error) {
 	observability.SetStatus(observability.RoleSlave, fmt.Sprintf("[REFLECT] Agent %d", agentID))
 	defer observability.SetStatus(observability.RoleIdle, "")
 
