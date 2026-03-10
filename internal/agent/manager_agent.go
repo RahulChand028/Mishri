@@ -156,6 +156,8 @@ func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, ex
 		maxIterations = 15
 	}
 
+	var currentPlan *store.AgentPlan
+
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		select {
 		case <-ctx.Done():
@@ -163,39 +165,55 @@ func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, ex
 		default:
 		}
 
-		// Ask sub-manager LLM for plan
-		orchContext = trimOrchContext(orchContext, 14)
-		agentPlan, rawResponse, isDone, isEscalation, escQuestion, escOptions, planErr := m.plan(ctx, &orchContext, subChatID, taskID, realParentChatID, realParentTaskID, realParentAgentID)
+		// Only call the LLM planner if we don't have a current plan with pending agents.
+		// This prevents the LLM from prematurely giving a "final response" when there
+		// are still agents in the plan that haven't run yet.
+		if currentPlan == nil || !hasPendingAgents(currentPlan) {
+			orchContext = trimOrchContext(orchContext, 14)
+			agentPlan, rawResponse, isDone, isEscalation, escQuestion, escOptions, planErr := m.plan(ctx, &orchContext, subChatID, taskID, realParentChatID, realParentTaskID, realParentAgentID)
 
-		if planErr != nil {
-			os.Remove(scratchPath)
-			return buildReport("failed", "", "", fmt.Sprintf("Sub-manager planning error: %v", planErr), ""), nil
+			if planErr != nil {
+				os.Remove(scratchPath)
+				return buildReport("failed", "", "", fmt.Sprintf("Sub-manager planning error: %v", planErr), ""), nil
+			}
+
+			// Sub-manager gave a final answer
+			if isDone {
+				os.Remove(scratchPath)
+				return buildReport("success", rawResponse, "", "", ""), nil
+			}
+
+			// Sub-manager wants to escalate to user
+			if isEscalation {
+				return m.handleEscalation(realParentChatID, realParentTaskID, subChatID, planID, goal, priorReports, escQuestion, escOptions, realParentAgentID)
+			}
+
+			if agentPlan == nil {
+				os.Remove(scratchPath)
+				return buildReport("failed", "", "", "Sub-manager failed to produce a plan", ""), nil
+			}
+
+			currentPlan = agentPlan
+			// Persist plan state
+			_ = m.history.SyncPlanAgents(planID, currentPlan.Agents)
+
+			// Emit plan event for UI (only for newly created plans)
+			m.logger.Log(observability.Event{
+				Type:          observability.EventTypePlan,
+				ChatID:        subChatID,
+				TaskID:        taskID,
+				ParentChatID:  realParentChatID,
+				ParentTaskID:  realParentTaskID,
+				ParentAgentID: realParentAgentID,
+				Data:          currentPlan,
+			})
 		}
-
-		// Sub-manager gave a final answer
-		if isDone {
-			os.Remove(scratchPath)
-			return buildReport("success", rawResponse, "", "", ""), nil
-		}
-
-		// Sub-manager wants to escalate to user
-		if isEscalation {
-			return m.handleEscalation(realParentChatID, realParentTaskID, subChatID, planID, goal, priorReports, escQuestion, escOptions, realParentAgentID)
-		}
-
-		if agentPlan == nil {
-			os.Remove(scratchPath)
-			return buildReport("failed", "", "", "Sub-manager failed to produce a plan", ""), nil
-		}
-
-		// Persist plan state
-		_ = m.history.SyncPlanAgents(planID, agentPlan.Agents)
 
 		// Find next group of agents to run (supporting parallel execution)
 		var agentsToRun []*store.Agent
 		firstAgentIdx := -1
-		for i := range agentPlan.Agents {
-			if agentPlan.Agents[i].Status == "pending" || agentPlan.Agents[i].Status == "" {
+		for i := range currentPlan.Agents {
+			if currentPlan.Agents[i].Status == "pending" || currentPlan.Agents[i].Status == "" {
 				firstAgentIdx = i
 				break
 			}
@@ -207,20 +225,23 @@ func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, ex
 				Role:  llms.ChatMessageTypeHuman,
 				Parts: []llms.ContentPart{llms.TextPart("All agents have completed. Synthesize their reports and give the final result as plain text.")},
 			})
+			currentPlan = nil // Reset so the loop calls the planner for synthesis
 			continue
 		}
 
 		// Group agents with same non-zero parallel_group
-		targetGroup := agentPlan.Agents[firstAgentIdx].ParallelGroup
+		targetGroup := currentPlan.Agents[firstAgentIdx].ParallelGroup
 		if targetGroup != 0 {
-			for i := range agentPlan.Agents {
-				if (agentPlan.Agents[i].Status == "pending" || agentPlan.Agents[i].Status == "") && agentPlan.Agents[i].ParallelGroup == targetGroup {
-					agentsToRun = append(agentsToRun, &agentPlan.Agents[i])
+			for i := range currentPlan.Agents {
+				if (currentPlan.Agents[i].Status == "pending" || currentPlan.Agents[i].Status == "") && currentPlan.Agents[i].ParallelGroup == targetGroup {
+					agentsToRun = append(agentsToRun, &currentPlan.Agents[i])
 				}
 			}
 		} else {
-			agentsToRun = append(agentsToRun, &agentPlan.Agents[firstAgentIdx])
+			agentsToRun = append(agentsToRun, &currentPlan.Agents[firstAgentIdx])
 		}
+
+		log.Printf("[MANAGER] Dispatching %d agent(s) from plan (iteration %d), next agent ID: %d", len(agentsToRun), iteration, agentsToRun[0].ID)
 
 		// Dispatch agents (in parallel if more than one)
 		var wg sync.WaitGroup
@@ -289,26 +310,36 @@ func (m *ManagerAgent) execute(ctx context.Context, chatID, subChatID string, ex
 				}
 			}
 			m.logger.LogAgentEnd(subChatID, taskID, agent.ID, agent.Status, agent.Report)
-			_ = m.history.SyncPlanAgents(planID, agentPlan.Agents)
+			_ = m.history.SyncPlanAgents(planID, currentPlan.Agents)
 
-			// Feed result back briefly
+			// Feed result into orchestration context for when synthesis is needed later
 			brief := agent.Report
 			if len(brief) > 2000 {
 				brief = brief[:2000] + "... [truncated]"
 			}
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeAI,
-				Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Worker %d completed.", agent.ID))},
+				Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Worker %d (%s) completed [%s].", agent.ID, agent.Type, agent.Status))},
 			})
 			orchContext = append(orchContext, llms.MessageContent{
 				Role:  llms.ChatMessageTypeHuman,
-				Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Worker %d (%s) report [%s]:\n%s\n\nRemaining Goal: %s\n\nIf more workers are needed, call `propose_plan`. If sufficient, provide final response.", agent.ID, agent.Type, agent.Status, brief, goal))},
+				Parts: []llms.ContentPart{llms.TextPart(fmt.Sprintf("Worker %d (%s) report:\n%s", agent.ID, agent.Type, brief))},
 			})
 		}
 	}
 
 	os.Remove(scratchPath)
 	return buildReport("partial", "", "", "Sub-manager reached maximum iterations", ""), nil
+}
+
+// hasPendingAgents checks if any agents in the plan still have "pending" or empty status.
+func hasPendingAgents(plan *store.AgentPlan) bool {
+	for _, a := range plan.Agents {
+		if a.Status == "pending" || a.Status == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // handleEscalation saves the Sub-Manager's state and returns an escalation result.
@@ -452,17 +483,6 @@ func (m *ManagerAgent) plan(ctx context.Context, messages *[]llms.MessageContent
 						Content:    "Plan received.",
 					},
 				},
-			})
-
-			// Emit plan event for UI
-			m.logger.Log(observability.Event{
-				Type:          observability.EventTypePlan,
-				ChatID:        chatID,
-				TaskID:        taskID,
-				ParentChatID:  parentChatID,
-				ParentTaskID:  parentTaskID,
-				ParentAgentID: parentAgentID,
-				Data:          &agentPlan,
 			})
 
 			return &agentPlan, "", false, false, "", nil, nil
